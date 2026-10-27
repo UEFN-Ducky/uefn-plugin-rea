@@ -1,0 +1,6 @@
+# Build output — never commit
+__pycache__/
+*.pyc
+.pytest_cache/
+deploy/
+.env

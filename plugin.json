@@ -1,0 +1,161 @@
+{
+  "id": "rea",
+  "kind": "plugin",
+  "version": "1.0.0",
+  "label": "Reverse Engineer",
+  "description": "Point at any app, folder, EXE, DLL, archive or game file and see how it's built in one click, powered by REA (Reverse Engineer Anything). Agents get all 229 REA tools too.",
+  "min_app_version": "1.0.0",
+  "default_enabled": false,
+  "secret_keys": [],
+  "data_sharing": false,
+  "contributes": {
+    "agent.tools": {
+      "category": "rea",
+      "intent_pattern": "\\b(rea|reverse[- ]engineer\\w*|decompil\\w*|disassembl\\w*|binary analysis)\\b",
+      "plan_tools": [
+        "rea_status",
+        "rea_runs",
+        "rea_get",
+        "rea_apps"
+      ],
+      "destructive_tools": [
+        "rea_delete",
+        "rea_setup",
+        "rea_investigate"
+      ]
+    },
+    "ui.panels": [
+      {
+        "id": "main",
+        "title": "Reverse Engineer",
+        "icon": "search",
+        "entry": "ui/index.html"
+      }
+    ],
+    "header.buttons": [
+      {
+        "id": "main",
+        "title": "Reverse Engineer",
+        "icon": "search",
+        "action": "panel:main",
+        "order": 60
+      }
+    ],
+    "walkthrough": {
+      "id": "rea",
+      "title": "Reverse Engineer",
+      "auto_start": "first_enable",
+      "steps": [
+        {
+          "target": "shell.header",
+          "title": "REA is installing by itself",
+          "body": "Nothing to press: Reverse Engineer is downloading REA now. Watch it (or **Cancel** it) in the top bar's activity list.",
+          "advance": "next"
+        },
+        {
+          "target": "header.button.main",
+          "title": "Point at anything",
+          "body": "Open **Reverse Engineer**, then drop an app's folder, an EXE, DLL or game file on it, or pick a running app. One click shows what it's built with and where to look next.",
+          "advance": "require_click"
+        }
+      ]
+    },
+    "automations": {
+      "nodes": [
+        {
+          "id": "rea.run",
+          "label": "Reverse engineer",
+          "group": "Reverse Engineer",
+          "description": "Point REA at a folder or file; outputs what it is and where to look next.",
+          "config_fields": [
+            {
+              "id": "target",
+              "label": "Folder or file",
+              "type": "string"
+            }
+          ],
+          "inputs": [
+            {
+              "id": "target",
+              "label": "Target path",
+              "type": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "digest",
+              "label": "Findings",
+              "type": "json"
+            },
+            {
+              "id": "summary",
+              "label": "Summary",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "templates": [
+        {
+          "id": "rea-run",
+          "label": "Reverse engineer an app",
+          "category": "Reverse Engineer",
+          "description": "Chat start \u2192 Agent \u2192 Reverse engineer \u2192 Finish.",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.chat",
+                "x": 0,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "a",
+                "type": "pipeline.agent",
+                "x": 200,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "n",
+                "type": "rea.run",
+                "x": 400,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 0,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "a",
+                "kind": "main"
+              },
+              {
+                "source": "a",
+                "target": "n",
+                "kind": "main"
+              },
+              {
+                "source": "n",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "backend": {
+    "entry": "backend",
+    "register": "register"
+  }
+}

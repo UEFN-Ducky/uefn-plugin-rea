@@ -1,0 +1,271 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="../../_kit/ducky.js"></script>
+  <style>
+    body { margin: 0; }
+    .shell { display: grid; grid-template-columns: 260px 1fr; gap: 12px; height: 100vh; box-sizing: border-box; padding: 12px; }
+    .side { overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+    .main { overflow: auto; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .drop { border: 2px dashed var(--border); border-radius: 14px; padding: 28px 18px; text-align: center;
+            display: flex; flex-direction: column; gap: 12px; align-items: center; transition: border-color .15s, background .15s; }
+    .drop.over { border-color: var(--accent); background: var(--card); }
+    .drop h2 { margin: 0; font-size: 1.25em; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; }
+    .grow { flex: 1; min-width: 220px; }
+    .run { text-align: left; width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
+           background: none; color: var(--fg); cursor: pointer; font: inherit; display: flex; gap: 6px; align-items: flex-start; }
+    .run:hover { background: var(--card); }
+    .run.on { background: var(--card); border-color: var(--border); }
+    .run .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .run .x { opacity: .5; padding: 0 4px; }
+    .run .x:hover { opacity: 1; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: .85em; }
+    .chip b { color: var(--accent); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+    .probe { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
+    .probe:first-child { border-top: 0; }
+    .probe .t { flex: 1; min-width: 0; }
+    .probe code, .mono { font-family: var(--font-mono, monospace); font-size: .85em; word-break: break-all; }
+    .apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; width: 100%; }
+    .apps button { text-align: left; }
+    pre { white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; font-size: .8em; }
+    details summary { cursor: pointer; }
+    button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent);
+            border-radius: 50%; animation: r 0.8s linear infinite; vertical-align: -2px; }
+    @keyframes r { to { transform: rotate(360deg); } }
+    .bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+    .bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  </style>
+</head>
+<body class="dk-page">
+  <div class="shell">
+    <aside class="side dk-card" aria-label="Saved analyses">
+      <div class="dk-card__title">Analyses</div>
+      <div id="runs"><div class="dk-muted">None yet.</div></div>
+    </aside>
+    <main class="main">
+      <div id="setup"></div>
+      <section class="drop" id="drop" aria-label="Pick what to reverse engineer">
+        <h2>Point at anything</h2>
+        <div class="dk-muted">Drop an app folder, EXE, DLL, .asar, game pack or model file here, or pick one.</div>
+        <div class="row">
+          <button class="dk-btn dk-btn--primary" id="pickFolder">Pick a folder</button>
+          <button class="dk-btn" id="pickFile">Pick a file</button>
+          <button class="dk-btn" id="pickApp">Pick a running app</button>
+        </div>
+        <div class="row" style="width:100%">
+          <input class="dk-input grow" id="path" placeholder="…or paste a path or website URL" aria-label="Path or URL">
+          <button class="dk-btn" id="go">Analyze</button>
+        </div>
+        <div id="apps" class="apps" hidden></div>
+      </section>
+      <div id="view"></div>
+    </main>
+  </div>
+  <script>
+    const CHANNEL = "uefn-plugin-ui";
+    function call(method, params = {}) {
+      const id = crypto.randomUUID();
+      return new Promise((resolve, reject) => {
+        function onMsg(ev) {
+          const d = ev.data;
+          if (!d || d.channel !== CHANNEL || d.id !== id) return;
+          window.removeEventListener("message", onMsg);
+          d.ok ? resolve(d.result) : reject(new Error(d.error || "bridge error"));
+        }
+        window.addEventListener("message", onMsg);
+        parent.postMessage({ channel: CHANNEL, id, method, params }, "*");
+      });
+    }
+    const rpc = (method, params = {}) => call("plugin.call", { method, params });
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const $ = (id) => document.getElementById(id);
+    let current = "";
+    let st = { ready: false };
+
+    // ---- setup ----
+    async function loadStatus() {
+      st = await rpc("status").catch(() => ({ ready: false, error: "Backend not loaded." }));
+      const box = $("setup");
+      if (st.ready && !st.busy) { box.innerHTML = ""; return; }
+      if (st.busy) {
+        const pct = typeof st.percent === "number" ? st.percent : null;
+        box.innerHTML = `<div class="dk-card dk-stack">
+          <div class="row" style="justify-content:space-between">
+            <div class="dk-card__title"><span class="spin"></span> Getting REA ready${pct !== null ? ` · ${pct}%` : ""}</div>
+            <button class="dk-btn" id="doCancel">Cancel</button></div>
+          <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" ${pct !== null ? `aria-valuenow="${pct}"` : ""}><i style="width:${pct ?? 15}%"></i></div>
+          <div class="dk-muted">${esc(st.step || "Starting…")} You can keep working: it also shows in the top bar's activity list.</div></div>`;
+        $("doCancel").onclick = async () => { await rpc("cancel_job"); };
+        return;
+      }
+      box.innerHTML = `<div class="dk-card dk-stack">
+        <div class="dk-card__title">${st.cancelled ? "Setup cancelled" : st.error ? "Setup didn't finish" : "REA isn't installed yet"}</div>
+        <div class="dk-muted">One download: REA ${esc(st.pinned)} with its own Node ${esc(st.node)} (SHA-checked, nothing system-wide). Your agents get its 229 tools too.</div>
+        ${st.error ? `<div class="dk-error">${esc(st.error)}</div>` : ""}
+        <div><button class="dk-btn dk-btn--primary" id="doSetup">${st.cancelled || st.error ? "Try again" : "Set up"}</button></div></div>`;
+      $("doSetup").onclick = async () => { await rpc("setup"); loadStatus(); };
+    }
+
+    // ---- runs ----
+    async function loadRuns() {
+      const out = await rpc("runs").catch(() => ({ runs: [] }));
+      const box = $("runs");
+      if (!out.runs?.length) { box.innerHTML = '<div class="dk-muted">None yet.</div>'; return; }
+      box.innerHTML = out.runs.map((r) => `<div class="run ${r.id === current ? "on" : ""}" role="button" tabindex="0" data-id="${esc(r.id)}">
+        <span>${r.status === "running" ? '<span class="spin"></span>' : r.ok ? "●" : "✕"}</span><span class="t" title="${esc(r.target)}">${esc(r.name)}</span>
+        <span class="x" role="button" tabindex="0" aria-label="Delete" data-del="${esc(r.id)}">×</span></div>`).join("");
+      box.querySelectorAll(".run").forEach((el) => {
+        el.onclick = (ev) => { if (!ev.target.dataset.del) openRun(el.dataset.id); };
+        el.onkeydown = (ev) => { if (ev.key === "Enter") openRun(el.dataset.id); };
+      });
+      box.querySelectorAll("[data-del]").forEach((el) => el.onclick = async (ev) => {
+        ev.stopPropagation();
+        const ok = await call("ui.confirm", { title: "Delete analysis?", message: "Its saved result files go too.", confirm: "Delete", danger: true });
+        if (!ok?.confirmed) return;
+        await rpc("delete", { run_id: el.dataset.del });
+        if (current === el.dataset.del) { current = ""; $("view").innerHTML = ""; }
+        loadRuns();
+      });
+    }
+
+    async function openRun(id) {
+      current = id;
+      loadRuns();
+      const out = await rpc("get", { run_id: id }).catch((e) => ({ ok: false, error: e.message }));
+      if (!out.ok) { $("view").innerHTML = `<div class="dk-error">${esc(out.error)}</div>`; return; }
+      render(out.run);
+    }
+
+    // ---- analyze ----
+    async function analyze(target) {
+      target = String(target || "").trim().replace(/^"|"$/g, "");
+      if (!target) return $("path").focus();
+      $("apps").hidden = true;
+      if (/^https?:\/\//i.test(target)) return investigate(target, "");
+      if (!st.ready) { await loadStatus(); if (!st.ready) { $("view").innerHTML = `<div class="dk-error">${st.busy ? "REA is still getting ready (see above); try again when it finishes." : "Set up REA first (button above)."}</div>`; return; } }
+      $("view").innerHTML = `<div class="dk-card"><span class="spin"></span> Looking inside <span class="mono">${esc(target)}</span>…</div>`;
+      const out = await rpc("analyze", { target }).catch((e) => ({ ok: false, error: e.message }));
+      if (out.run) { current = out.run.id; loadRuns(); return openRun(out.run.id); }
+      $("view").innerHTML = `<div class="dk-error">${esc(out.error)}</div>`;
+    }
+
+    async function runProbe(op, path) {
+      $("view").insertAdjacentHTML("afterbegin", `<div class="dk-card" id="probing"><span class="spin"></span> ${esc(op)} on <span class="mono">${esc(path)}</span>…</div>`);
+      const out = await rpc("probe", { operation: op, path }).catch((e) => ({ ok: false, error: e.message }));
+      if (out.run) return openRun(out.run.id);
+      $("probing")?.remove();
+      $("view").insertAdjacentHTML("afterbegin", `<div class="dk-error">${esc(out.error)}</div>`);
+    }
+
+    async function investigate(target, question, runId = "") {
+      const out = await rpc("investigate", { target, question, run_id: runId }).catch((e) => ({ ok: false, error: e.message }));
+      if (!out.ok) return call("ui.alert", { title: "Couldn't start", message: out.error });
+      call("ui.alert", { title: "Investigation started", message: "An agent is reverse engineering it in a new chat with all REA tools." });
+    }
+
+    // ---- render ----
+    function render(r) {
+      if (r.status === "running") {
+        $("view").innerHTML = `<div class="dk-card dk-stack">
+          <div class="row" style="justify-content:space-between">
+            <div class="dk-card__title"><span class="spin"></span> ${esc(r.name)}</div>
+            <button class="dk-btn" id="stopRun">Cancel</button></div>
+          <div class="mono dk-muted">${esc(r.target)}</div>
+          <div class="bar"><i id="runBar" style="width:${typeof r.percent === "number" ? r.percent : 5}%"></i></div>
+          <div id="runStep">${esc(r.step || "Starting…")}</div>
+          <div class="dk-muted">Big apps can take a few minutes. It keeps going if you leave this tab, and it shows in the top bar's activity list.</div></div>`;
+        $("stopRun").onclick = () => rpc("cancel_job", { job_id: r.id });
+        return;
+      }
+      const d = r.digest || {};
+      const s = d.subject || {};
+      const sha = s.digest?.sha256 || "";
+      const chips = [
+        s.format && `<span class="chip">format <b>${esc(s.format)}</b></span>`,
+        s.architecture && `<span class="chip">arch <b>${esc(s.architecture)}</b></span>`,
+        sha && `<span class="chip" title="${esc(sha)}">sha256 <b>${esc(sha.slice(0, 12))}…</b></span>`,
+        ...Object.entries(d.counts || {}).map(([k, v]) => `<span class="chip">${esc(k.replace(/_/g, " "))} <b>${esc(v)}</b></span>`),
+        `<span class="chip">${esc(r.seconds)} s</span>`,
+      ].filter(Boolean).join("");
+      const cands = (d.candidates || []).map((c) => `<div class="dk-card"><div class="dk-card__title">${esc(c.family || c.kind || "candidate")}</div>
+        <div class="dk-muted">${esc(c.confidence || "")}</div><div>${esc(c.rationale || "")}</div>
+        ${(c.basis_path_preview || []).map((p) => `<div class="mono">${esc(p)}</div>`).join("")}</div>`).join("");
+      const probes = (d.next_probes || []).map((g) => {
+        const ex = g.example || {};
+        const can = ex.path && g.operation !== "open_binary";
+        return `<div class="probe"><div class="t"><b>${esc(g.operation.replace(/_/g, " "))}</b>${g.count > 1 ? ` <span class="dk-muted">×${esc(g.count)}</span>` : ""}
+          <div class="dk-muted">${esc(ex.rationale || "")}</div>${ex.path ? `<div class="mono">${esc(ex.path)}</div>` : ""}</div>
+          ${can ? `<button class="dk-btn" data-op="${esc(g.operation)}" data-path="${esc(ex.path)}">Run</button>` : ""}</div>`;
+      }).join("");
+      const lims = [...(d.limitations || []), ...(d.unknowns || [])].map((l) => `<li>${esc(l)}</li>`).join("");
+      $("view").innerHTML = `
+        <div class="dk-card dk-stack">
+          <div class="dk-card__title">${esc(r.name)}</div>
+          <div class="mono dk-muted">${esc(r.target)}</div>
+          ${r.ok ? `<div class="chips">${chips}</div>` : `<div class="dk-error">${esc(r.error)}${r.remediation ? `<div class="dk-muted">${esc(r.remediation)}</div>` : ""}</div>`}
+          <div class="row" style="justify-content:flex-start">
+            <input class="dk-input grow" id="q" placeholder="Ask about it: how does search work? what engine is this?" aria-label="Question for the agent">
+            <button class="dk-btn dk-btn--primary" id="ask">Investigate with agent</button>
+          </div>
+        </div>
+        ${cands ? `<div class="dk-stack"><div class="dk-card__title">What it is</div><div class="cards">${cands}</div></div>` : ""}
+        ${probes ? `<div class="dk-card"><div class="dk-card__title">Look deeper (one click)</div>${probes}</div>` : ""}
+        ${lims ? `<details class="dk-card"><summary>Limits and unknowns</summary><ul>${lims}</ul></details>` : ""}
+        <details class="dk-card"><summary>Full result</summary>
+          <div class="dk-muted mono">${esc(r.result_path)} · ${esc(Math.round((r.result_bytes || 0) / 1024))} KB</div>
+          <pre>${r.details ? esc(JSON.stringify(r.details, null, 2)) : "Too big to show here: Investigate with agent reads it with REA's view tools."}</pre></details>`;
+      $("ask").onclick = () => investigate(r.target, $("q").value, r.id);
+      $("q").onkeydown = (ev) => { if (ev.key === "Enter") $("ask").click(); };
+      $("view").querySelectorAll("[data-op]").forEach((b) => b.onclick = () => runProbe(b.dataset.op, b.dataset.path));
+    }
+
+    // ---- pickers ----
+    $("go").onclick = () => analyze($("path").value);
+    $("path").onkeydown = (ev) => { if (ev.key === "Enter") analyze($("path").value); };
+    $("pickFolder").onclick = async () => { const o = await call("files.pickFolder").catch(() => ({})); if (o.folder) { $("path").value = o.folder; analyze(o.folder); } };
+    $("pickFile").onclick = async () => { const o = await call("files.pick", { accept: "any" }).catch(() => ({})); const f = o.files?.[0]; if (f) { $("path").value = f.path; analyze(f.path); } };
+    $("pickApp").onclick = async () => {
+      const box = $("apps");
+      if (!box.hidden) { box.hidden = true; return; }
+      box.hidden = false;
+      box.innerHTML = '<div class="dk-muted"><span class="spin"></span> Finding running apps…</div>';
+      const out = await rpc("apps").catch((e) => ({ ok: false, error: e.message }));
+      if (!out.ok) { box.innerHTML = `<div class="dk-error">${esc(out.error)}</div>`; return; }
+      box.innerHTML = out.apps.map((a, i) => `<button class="dk-btn" data-i="${i}" title="${esc(a.exe)}"><b>${esc(a.name)}</b><div class="dk-muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.title)}</div></button>`).join("") || '<div class="dk-muted">No windows found.</div>';
+      box.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => { const a = out.apps[+b.dataset.i]; $("path").value = a.folder; analyze(a.folder); });
+    };
+    const drop = $("drop");
+    drop.addEventListener("dragover", (ev) => { ev.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", async (ev) => {
+      ev.preventDefault();
+      drop.classList.remove("over");
+      const names = [...(ev.dataTransfer?.files || [])].map((f) => f.name);
+      const out = await call("files.dropped", { names }).catch(() => ({}));
+      const f = out.files?.[0];
+      if (f?.path) { $("path").value = f.path; analyze(f.path); }
+    });
+
+    call("plugin.subscribe", { types: ["rea_status", "rea_runs_changed", "rea_run_progress"] }).catch(() => {});
+    window.addEventListener("message", (ev) => {
+      const e = ev.data?.channel === CHANNEL ? ev.data.event : null;
+      if (!e) return;
+      if (e.type === "rea_status") loadStatus();
+      if (e.type === "rea_run_progress" && e.id === current && $("runStep")) {
+        $("runStep").textContent = e.step || "";
+        if (typeof e.percent === "number") $("runBar").style.width = e.percent + "%";
+      }
+      if (e.type === "rea_runs_changed" || e.type === "plugin_scope_changed") {
+        if (current && e.id === current) openRun(current); else loadRuns();
+      }
+    });
+    loadStatus();
+    loadRuns();
+  </script>
+</body>
+</html>
