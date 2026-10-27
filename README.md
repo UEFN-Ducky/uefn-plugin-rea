@@ -45,5 +45,5 @@ py scripts/build_zip.py                 # deploy/rea-<ver>.ducky-plugin.zip
 py scripts/release.py --publish --changelog "1.0.0: ..."   # commit+push, then Store upload (needs DUCKYOS_API_KEY)
 ```
 
-`py backend/test_rea.py` runs the static self-check; `ducky_plugin_test` runs the full
+`py tests/test_rea.py` runs the static self-check; `ducky_plugin_test` runs the full
 install/tool/panel test against this repo.
