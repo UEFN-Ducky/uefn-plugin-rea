@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import uuid
 from pathlib import Path
 
@@ -23,6 +24,10 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win3
 # Bigger results stay on disk and REA projects a summary of them (inspect-analysis-view).
 _INLINE_MAX = 2 * 1024 * 1024
 _DOC_DETAILS_MAX = 400 * 1024
+# Per-source budget for analyze_javascript_application: big Electron apps need hours, so a run
+# can go overnight. Hitting it is not a failure: REA keeps a partial observation (see _finish).
+_JS_TIMEOUT_MS = 8 * 3600 * 1000
+_PARTIAL_NOTE = "Stopped at the time limit; this shows everything it found up to then."
 
 # Files REA has a dedicated reader for; anything else goes to inspect-artifact.
 _BY_EXT = {
@@ -40,6 +45,11 @@ _PE_PROBES = [
     ("inspect_pe_certificates", "Who signed it."),
     ("inspect_go_binary", "If it's written in Go: compiler, modules and build settings."),
     ("inspect_rust_binary", "If it's written in Rust: its crates and versions."),
+]
+# Once the native decompiler (Ghidra) is installed, any EXE/DLL also gets these.
+_NATIVE_PROBES = [
+    ("decompile", "Pseudocode of its entry function (Ghidra)."),
+    ("analyze", "Native overview with Ghidra: functions, strings, imports and references."),
 ]
 # Next probes that need an open REA session (MCP), not a one-shot CLI call.
 _SESSION_OPS = {"open_binary"}
@@ -83,6 +93,16 @@ def _digest(result: dict) -> dict:
         "limitations": nr.get("limitations") or [],
         "unknowns": nr.get("unknowns") or [],
     }
+
+
+def _partial_observation(path: Path) -> dict | None:
+    """The Evidence REA kept when it hit its time limit (provider_timeout), or None."""
+    try:
+        doc = json.loads(path.read_text("utf-8", "replace"))
+    except (OSError, ValueError, MemoryError):
+        return None
+    obs = (doc.get("details") or {}).get("partial_observation") if isinstance(doc, dict) else None
+    return obs if isinstance(obs, dict) and obs.get("evidence_id") else None
 
 
 def _error_head(path: Path) -> dict:
@@ -165,7 +185,7 @@ def register(api) -> None:
         return {
             "transport": "stdio", "command": command, "args": args,
             # 6.8.0 takes only full|off here ("compact" makes it exit); off keeps tools/list small.
-            "env": {"REA_MCP_OUTPUT_SCHEMA_PROFILE": "off"},
+            "env": {"REA_MCP_OUTPUT_SCHEMA_PROFILE": "off", **runtime.provider_env()},
             "label": "REA (Reverse Engineer Anything)",
             "description": "Reverse engineer binaries, apps, archives, websites and captures: "
                            "229 tools with evidence. Set up by the Reverse Engineer plugin.",
@@ -190,22 +210,31 @@ def register(api) -> None:
         return {
             "ok": True, "ready": runtime.ready(), "version": runtime.installed_version(),
             "pinned": runtime.REA_VERSION, "node": runtime.NODE_VERSION,
+            "ghidra": runtime.ghidra_ready(), "ghidra_version": runtime.GHIDRA_VERSION,
+            "jdk_version": runtime.JDK_VERSION,
             "busy": state["busy"], "step": state["step"], "percent": state["percent"],
             "error": state["error"], "cancelled": state["cancelled"],
             "log": state["log"][-8:], "runtime_folder": str(runtime.root()),
         }
 
-    def _setup_job(update: bool) -> None:
+    def _setup_job(update: bool, ghidra: bool) -> None:
         try:
             runtime.setup(_log, cancel, update=update)
-            _log("Giving your agents REA's tools…", 97)
+            if ghidra:
+                runtime.ensure_ghidra(_log, cancel)
+                _log("Checking the native decompiler…", 99)
+                healthy, detail = runtime.doctor_ghidra()
+                if not healthy:
+                    raise RuntimeError(f"Ghidra installed but REA can't use it: {detail}")
+            _log("Giving your agents REA's tools…", 99)
             reg = _register_mcp()
             if reg.get("ok"):
                 _write_marker()
-            done = f"REA {runtime.installed_version()} is ready. Point it at any folder or file."
+            done = (f"Native decompiler ready (Ghidra {runtime.GHIDRA_VERSION}). Point it at any EXE or DLL."
+                    if ghidra else f"REA {runtime.installed_version()} is ready. Point it at any folder or file.")
             state.update(error="", step=done, percent=100)
             _job("done", done, 100)
-            _alert("REA is ready.", "ok")
+            _alert("Native decompiler is ready." if ghidra else "REA is ready.", "ok")
         except runtime.Cancelled:
             state.update(cancelled=True, error="", step="Setup cancelled.", percent=None)
             _job("error", "Cancelled. Open Reverse Engineer to start it again.")
@@ -218,17 +247,17 @@ def register(api) -> None:
             state["busy"] = False
             _push("status", done=True)
 
-    def setup(update: bool = False, wait: bool = False) -> dict:
+    def setup(update: bool = False, wait: bool = False, ghidra: bool = False) -> dict:
         with lock:
             if state["busy"]:
                 return {**status(), "started": False}
-            if runtime.ready() and not update:
+            if runtime.ready() and not update and (not ghidra or runtime.ghidra_ready()):
                 reg = _register_mcp()
                 return {**status(), "started": False, "mcp": reg}
             cancel.clear()
             state.update(busy=True, error="", cancelled=False, log=[], percent=0)
-        _log("Starting REA setup…", 0)
-        t = threading.Thread(target=_setup_job, args=(bool(update),), name="rea-setup", daemon=True)
+        _log("Adding the native decompiler…" if ghidra else "Starting REA setup…", 0)
+        t = threading.Thread(target=_setup_job, args=(bool(update), bool(ghidra)), name="rea-setup", daemon=True)
         t.start()
         if wait:
             t.join(timeout=1500)
@@ -250,7 +279,10 @@ def register(api) -> None:
 
     # ---- runs --------------------------------------------------------------------
 
-    runs_live: dict[str, threading.Event] = {}  # run id -> its cancel
+    # run id -> its cancel. Kept outside this module so a plugin update or reinstall mid-run (same
+    # app process, the run's thread keeps going) still shows the run as running and can cancel it.
+    runs_live: dict[str, threading.Event] = sys.modules.setdefault(
+        "_ducky_rea_runs_live", types.ModuleType("_ducky_rea_runs_live")).__dict__.setdefault("runs", {})
 
     def _put_run(doc: dict) -> dict:
         data.put(f"run.{doc['id']}", doc)
@@ -263,9 +295,9 @@ def register(api) -> None:
         return doc
 
     def _run_row(doc: dict, step: str = "", percent=None) -> None:
-        phase = {"running": "working", "done": "done"}.get(doc["status"], "error")
+        phase = {"running": "working", "done": "done", "partial": "done"}.get(doc["status"], "error")
         detail = step or {"running": f"Looking inside {Path(doc['target']).name}…", "done": f"Done in {doc.get('seconds', 0)} s.",
-                          "cancelled": "Cancelled."}.get(doc["status"], doc.get("error", "")[:200])
+                          "partial": _PARTIAL_NOTE, "cancelled": "Cancelled."}.get(doc["status"], doc.get("error", "")[:200])
         try:
             from frontend.ui_web.agent_modes import push_ui_event
 
@@ -275,7 +307,7 @@ def register(api) -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    def _finish(doc: dict, args: list[str], stop: threading.Event) -> None:
+    def _finish(doc: dict, args: list[str], stop: threading.Event, hard_timeout_s: float) -> None:
         target, cmd = doc["target"], doc["command"]
         folder = _runs_dir() / doc["id"]
         out_path, evidence = folder / "result.json", folder / "evidence.json"
@@ -291,7 +323,7 @@ def register(api) -> None:
                     _run_row(doc, step, percent)
                     _push("run_progress", id=doc["id"], step=step, percent=percent)
 
-                code, err = runtime.run(full, out_path, stop, on_progress=heard)
+                code, err = runtime.run(full, out_path, stop, timeout=hard_timeout_s, on_progress=heard)
                 size = out_path.stat().st_size if out_path.is_file() else 0
                 result: dict = {}
                 if 0 < size <= _INLINE_MAX:
@@ -309,12 +341,22 @@ def register(api) -> None:
             failed = code != 0 or ("error" in result and "evidence_id" not in result and "summary" not in result)
             digest = _digest(result) if result and not failed else {}
             if digest and not digest["next_probes"] and (digest["subject"] or {}).get("format") == "pe":
+                pe_probes = _PE_PROBES + (_NATIVE_PROBES if runtime.ghidra_ready() else [])
                 digest["next_probes"] = [{"operation": op, "count": 1, "example": {"operation": op, "path": target, "rationale": why}}
-                                         for op, why in _PE_PROBES if op.replace("_", "-") != cmd]
-            if size > _INLINE_MAX and code == 0:
+                                         for op, why in pe_probes if op.replace("_", "-") != cmd]
+            project_from = out_path if size > _INLINE_MAX and code == 0 else None
+            partial = False
+            if failed and result.get("code") == "provider_timeout":
+                # Out of time, not broken: summarize the Evidence REA observed before the deadline.
+                obs = _partial_observation(out_path)
+                if obs:
+                    project_from = folder / "partial.json"
+                    project_from.write_text(json.dumps(obs), "utf-8")
+                    partial = True
+            if project_from is not None:
                 # Too big to read here: REA projects a summary from the saved Evidence file.
                 view_req = folder / "summary-request.json"
-                view_req.write_text(json.dumps({"source": {"kind": "evidence-file", "path": str(out_path)},
+                view_req.write_text(json.dumps({"source": {"kind": "evidence-file", "path": str(project_from)},
                                                 "view": {"kind": "summary"}}), "utf-8")
                 summary_path = folder / "summary.json"
                 heard("Summarizing the result…", None)
@@ -328,7 +370,8 @@ def register(api) -> None:
                 result = projected
                 digest = _digest(projected) if projected else {}
             doc.update(
-                status="error" if failed else "done", ok=not failed, args=full,
+                status="error" if failed else "partial" if partial else "done", ok=not failed, args=full,
+                note=_PARTIAL_NOTE if partial and not failed else "",
                 error=(result.get("message") or err.strip()[-600:] or f"REA exited {code}") if failed else "",
                 remediation=(result.get("remediation") or {}).get("action", "") if failed else "",
                 digest=digest, result_bytes=size, evidence_path=str(evidence) if evidence.is_file() else "",
@@ -349,7 +392,7 @@ def register(api) -> None:
         if doc["seconds"] >= 20 and doc["status"] in ("done", "error"):
             _alert(f"{doc['name']}: {'done' if doc['ok'] else 'failed'}.", "ok" if doc["ok"] else "error")
 
-    def _start(target: str, args: list[str], wait_s: float) -> dict:
+    def _start(target: str, args: list[str], wait_s: float, hard_timeout_s: float = 9 * 3600) -> dict:
         """Start one REA run in the background; wait up to ``wait_s`` for it."""
         run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         cmd = args[0]
@@ -366,7 +409,7 @@ def register(api) -> None:
         stop = threading.Event()
         runs_live[run_id] = stop
         _run_row(doc)
-        t = threading.Thread(target=_finish, args=(doc, list(args), stop), name=f"rea-run-{run_id}", daemon=True)
+        t = threading.Thread(target=_finish, args=(doc, list(args), stop, hard_timeout_s), name=f"rea-run-{run_id}", daemon=True)
         t.start()
         if wait_s > 0:
             t.join(timeout=wait_s)
@@ -393,7 +436,7 @@ def register(api) -> None:
             return {"ok": False, "error": "REA is still getting ready: watch the top bar's activity list."}
         return _answer(_start(str(path.resolve()), _plan(path), float(wait_s or 0)))
 
-    def probe(operation: str = "", path: str = "", wait_s: float = 150) -> dict:
+    def probe(operation: str = "", path: str = "", wait_s: float = 150, time_limit_min: float = 0) -> dict:
         op = str(operation or "").strip()
         if not re.fullmatch(r"[a-z][a-z0-9_]{2,80}", op):
             return {"ok": False, "error": "operation must be a REA operation such as inspect_pe_imports."}
@@ -404,12 +447,19 @@ def register(api) -> None:
         if not runtime.ready():
             return {"ok": False, "error": "REA is still getting ready: watch the top bar's activity list."}
         args = [op.replace("_", "-")]
+        if op in ("decompile", "analyze", "function", "xrefs") and not runtime.ghidra_ready():
+            return {"ok": False, "needs_ghidra": True,
+                    "error": "Native decompiling needs Ghidra: rea_setup(ghidra=true) adds it in one click."}
+        if op == "decompile":
+            args += ["--procedure", "entry"]
         if Path(path).suffix.lower() == ".asar":
             args += ["--integrity-policy", "record-and-continue"]
+        budget_ms = int(min(24 * 60, max(0.1, float(time_limit_min))) * 60000) if time_limit_min else _JS_TIMEOUT_MS
         if op == "analyze_javascript_application":
             # REA's 5 min per source is too short for big bundles; this runs in the background with Cancel.
-            args += ["--analysis-timeout-ms", "1800000", "--max-heap-mb", "4096"]
-        return _answer(_start(str(Path(path).resolve()), args, float(wait_s or 0)))
+            args += ["--analysis-timeout-ms", str(budget_ms), "--max-heap-mb", "4096"]
+        # The hard stop sits past REA's own budget so REA, not a kill, ends the run (and keeps a partial).
+        return _answer(_start(str(Path(path).resolve()), args, float(wait_s or 0), budget_ms / 1000 + 3600))
 
     def cancel_run(run_id: str) -> dict:
         stop = runs_live.get(run_id)
@@ -521,11 +571,12 @@ def register(api) -> None:
         return status()
 
     @api.tool(intent=INTENT, listener=False)
-    def rea_setup(update: bool = False, wait: bool = False) -> dict:
+    def rea_setup(update: bool = False, wait: bool = False, ghidra: bool = False) -> dict:
         """One-click install of REA: a pinned, SHA-checked Node and rea-agents, then registers REA's 229
         tools for agents as the nested `rea` MCP server. update=true installs the newest REA;
-        wait=true blocks until done (a few minutes the first time)."""
-        return setup(update, wait)
+        ghidra=true also adds the native decompiler (Ghidra 12.1.4 + JDK 21, ~650 MB) for pseudocode
+        and xrefs on EXEs/DLLs; wait=true blocks until done (a few minutes the first time)."""
+        return setup(update, wait, ghidra)
 
     @api.tool(intent=INTENT, listener=False)
     def rea_cancel_job(job_id: str = "") -> dict:
@@ -541,10 +592,13 @@ def register(api) -> None:
         return analyze(target, wait_s)
 
     @api.tool(intent=INTENT, listener=False)
-    def rea_probe(operation: str, path: str, wait_s: float = 150) -> dict:
+    def rea_probe(operation: str, path: str, wait_s: float = 150, time_limit_min: float = 0) -> dict:
         """Run one follow-up REA operation from a run's next probes (e.g. inspect_pe_imports,
-        analyze_javascript_application, inspect_il2cpp_metadata) on one path. Background like rea_analyze."""
-        return probe(operation, path, wait_s)
+        analyze_javascript_application, inspect_il2cpp_metadata) on one path. Background like rea_analyze.
+        analyze_javascript_application may run for hours on a big app; if it hits its time limit the run
+        ends status=partial with a summary of everything found so far. time_limit_min sets that limit
+        (default 480 = 8 h, at most 1440): a short one for a quick look, a long one to run overnight."""
+        return probe(operation, path, wait_s, time_limit_min)
 
     @api.tool(intent=INTENT, listener=False)
     def rea_runs(limit: int = 50) -> dict:
@@ -586,7 +640,7 @@ def register(api) -> None:
     # ---- panel -------------------------------------------------------------------
 
     api.register_panel_rpc("status", lambda: status())
-    api.register_panel_rpc("setup", lambda update=False: setup(bool(update)))
+    api.register_panel_rpc("setup", lambda update=False, ghidra=False: setup(bool(update), ghidra=bool(ghidra)))
     # The panel's Cancel and the header activity list's Cancel on this plugin's job row.
     api.register_panel_rpc("cancel_job", lambda job_id="": cancel_job(job_id))
     # The panel waits briefly: quick looks come back at once, long ones show as running.

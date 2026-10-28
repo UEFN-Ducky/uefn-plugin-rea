@@ -45,8 +45,27 @@ def test_payload_files_present() -> None:
     assert skill.startswith("---"), "SKILL.md needs frontmatter"
 
 
+def test_timeout_keeps_partial_observation(tmp_path: Path | None = None) -> None:
+    import sys
+    import tempfile
+
+    sys.path.insert(0, str(ROOT))
+    from backend import _partial_observation
+
+    tmp = tmp_path or Path(tempfile.mkdtemp())
+    hit = tmp / "timeout.json"
+    hit.write_text(json.dumps({"code": "provider_timeout", "details": {
+        "partial_observation": {"evidence_id": "ev_1", "normalized_result": {}}}}), "utf-8")
+    assert _partial_observation(hit) == {"evidence_id": "ev_1", "normalized_result": {}}
+    bare = tmp / "bare.json"
+    bare.write_text(json.dumps({"code": "provider_timeout", "details": {}}), "utf-8")
+    assert _partial_observation(bare) is None
+    assert _partial_observation(tmp / "missing.json") is None
+
+
 if __name__ == "__main__":
     test_manifest_shape()
     test_backend_sources_parse()
     test_payload_files_present()
+    test_timeout_keeps_partial_observation()
     print("rea self-check ok")

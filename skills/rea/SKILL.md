@@ -20,8 +20,16 @@ Slow REA work (`analyze_javascript_application` on a real app takes minutes): us
 tools can't open: read them with `rea__inspect_analysis_view` and
 `{source: {kind: "evidence-file", path: <result_path>}, view: {kind: "summary"}}`.
 
-Deep work (decompile, xrefs, sessions, websites, captures): the nested `rea__*` tools. Find them with
-`ducky_get_tools("rea")` and call with `ducky_call_tool`. Native decompiling needs Ghidra, IDA or Hopper
-installed (`rea__…providers`); static JS/.NET/desktop/PE inspection needs nothing else.
+Native decompiling (pseudocode, xrefs on EXEs/DLLs) uses Ghidra. `rea_status().ghidra` says if it is
+installed; if not, `rea_setup(ghidra=true)` adds Ghidra 12.1.4 + its own JDK 21 (~650 MB, SHA-checked,
+cancellable; asks first). Then `rea_probe("decompile", exe)` returns the entry function's pseudocode
+and `rea_probe("analyze", exe)` a native overview; REA's `rea__*` session tools use the same Ghidra.
+Static JS/.NET/desktop/PE inspection needs nothing extra.
+
+A run that hits its time limit (big Electron apps can take hours) ends `status="partial"` with a
+summary of everything found so far: report it as partial, not as a failure.
+
+Deep work (xrefs, sessions, websites, captures): the nested `rea__*` tools. Find them with
+`ducky_get_tools("rea")` and call with `ducky_call_tool`.
 
 Rules: only software the person owns or may examine. Report the evidence and the unknowns REA returns.

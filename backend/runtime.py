@@ -25,6 +25,20 @@ NODE_VERSION = "24.22.1"
 NODE_URL = f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
 NODE_SHA256 = "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
 REA_VERSION = "6.8.0"
+# Native decompiling (pseudocode, xrefs): REA's Ghidra provider wants Ghidra 12.1+ and a full
+# 64-bit JDK 21+. REA's Windows lane is verified with exactly these two.
+GHIDRA_VERSION = "12.1.4"
+GHIDRA_URL = ("https://github.com/NationalSecurityAgency/ghidra/releases/download/"
+              "Ghidra_12.1.4_build/ghidra_12.1.4_PUBLIC_20260921.zip")
+GHIDRA_SHA256 = "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db"
+GHIDRA_DIRNAME = "ghidra_12.1.4_PUBLIC"
+JDK_VERSION = "21.0.9+10"
+JDK_URL = ("https://github.com/adoptium/temurin21-binaries/releases/download/"
+           "jdk-21.0.9%2B10/OpenJDK21U-jdk_x64_windows_hotspot_21.0.9_10.zip")
+JDK_SHA256 = "1c67df516e9795c0b09f5714bfe151da2e3cc988082042f5bbb60d75e4e63fb5"
+JDK_DIRNAME = "jdk-21.0.9+10"
+# Cold Ghidra import of a big binary takes far longer than REA's default startup budget.
+GHIDRA_STARTUP_TIMEOUT_MS = 2 * 3600 * 1000
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
@@ -62,6 +76,28 @@ def ready() -> bool:
     return node_exe().is_file() and rea_js().is_file()
 
 
+def ghidra_dir() -> Path:
+    return root() / GHIDRA_DIRNAME
+
+
+def jdk_dir() -> Path:
+    return root() / JDK_DIRNAME
+
+
+def ghidra_ready() -> bool:
+    return ((ghidra_dir() / "support" / "analyzeHeadless.bat").is_file()
+            and (jdk_dir() / "bin" / "javac.exe").is_file())
+
+
+def provider_env() -> dict:
+    """What REA needs to find the Ghidra this plugin installed (empty until it is)."""
+    if not ghidra_ready():
+        return {}
+    return {"GHIDRA_INSTALL_DIR": str(ghidra_dir()), "JAVA_HOME": str(jdk_dir()),
+            "REA_ANALYSIS_PROVIDER": "ghidra",
+            "REA_GHIDRA_STARTUP_TIMEOUT_MS": str(GHIDRA_STARTUP_TIMEOUT_MS)}
+
+
 def installed_version() -> str:
     try:
         pkg = json.loads((app_dir() / "node_modules" / "rea-agents" / "package.json").read_text("utf-8"))
@@ -76,6 +112,7 @@ def _env() -> dict:
     env["npm_config_cache"] = str(root() / "npm-cache")
     env["npm_config_update_notifier"] = "false"
     env["NO_COLOR"] = "1"
+    env.update(provider_env())
     return env
 
 
@@ -93,7 +130,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
 
 
 def _download(url: str, dest: Path, sha256: str, progress: Progress, cancel: threading.Event,
-              lo: float, hi: float) -> None:
+              lo: float, hi: float, label: str = f"Node {NODE_VERSION}") -> None:
     """Stream ``url`` to ``dest``, checking its SHA-256; percent runs from ``lo`` to ``hi``."""
     digest = hashlib.sha256()
     part = dest.with_suffix(dest.suffix + ".part")
@@ -115,39 +152,57 @@ def _download(url: str, dest: Path, sha256: str, progress: Progress, cancel: thr
                 if pct != last:
                     last = pct if pct is not None else last
                     mb = f"{got / 1048576:.0f}" + (f" of {total / 1048576:.0f}" if total else "")
-                    progress(f"Downloading Node {NODE_VERSION} ({mb} MB)", pct)
+                    progress(f"Downloading {label} ({mb} MB)", pct)
         if digest.hexdigest() != sha256:
-            raise RuntimeError("The Node download didn't match its published SHA-256; nothing was installed.")
+            raise RuntimeError(f"The {label} download didn't match its published SHA-256; nothing was installed.")
         os.replace(part, dest)
     finally:
         part.unlink(missing_ok=True)
 
 
-def ensure_node(progress: Progress, cancel: threading.Event) -> None:
-    if node_exe().is_file():
-        return
+def _install_zip(url: str, sha256: str, inner: str, dest: Path, label: str,
+                 progress: Progress, cancel: threading.Event, lo: float, hi: float) -> None:
+    """Download a pinned zip, unpack it beside ``dest`` and move its ``inner`` folder to ``dest``.
+
+    Cancel at any point leaves nothing behind: the zip and the half-unpacked folder go."""
     base = root()
     base.mkdir(parents=True, exist_ok=True)
-    zip_path = base / f"node-{NODE_VERSION}.zip"
+    zip_path = base / f"{dest.name}.zip"
+    tmp = base / f"{dest.name}.part"
     try:
-        _download(NODE_URL, zip_path, NODE_SHA256, progress, cancel, 2, 55)
-        progress("Unpacking Node…", 57)
-        tmp = base / "node.part"
+        _download(url, zip_path, sha256, progress, cancel, lo, lo + (hi - lo) * 0.9, label)
+        progress(f"Unpacking {label}…", int(lo + (hi - lo) * 0.92))
         shutil.rmtree(tmp, ignore_errors=True)
         with zipfile.ZipFile(zip_path) as zf:
             safe = tmp.resolve()
             for m in zf.infolist():
                 if os.path.commonpath([str(safe), str((tmp / m.filename).resolve())]) != str(safe):
-                    raise RuntimeError(f"unsafe path in the Node archive: {m.filename}")
+                    raise RuntimeError(f"unsafe path in the {label} archive: {m.filename}")
             zf.extractall(tmp)
         if cancel.is_set():
             raise Cancelled()
-        shutil.rmtree(node_dir(), ignore_errors=True)
-        os.replace(tmp / f"node-v{NODE_VERSION}-win-x64", node_dir())
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(dest, ignore_errors=True)
+        os.replace(tmp / inner, dest)
     finally:
         zip_path.unlink(missing_ok=True)
-        shutil.rmtree(base / "node.part", ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ensure_node(progress: Progress, cancel: threading.Event) -> None:
+    if not node_exe().is_file():
+        _install_zip(NODE_URL, NODE_SHA256, f"node-v{NODE_VERSION}-win-x64", node_dir(),
+                     f"Node {NODE_VERSION}", progress, cancel, 2, 60)
+
+
+def ensure_ghidra(progress: Progress, cancel: threading.Event) -> None:
+    """The native decompiler: a JDK (~200 MB) then Ghidra (~450 MB), both SHA-checked."""
+    if sys.platform != "win32":
+        raise RuntimeError("The native decompiler installs on Windows only.")
+    if not (jdk_dir() / "bin" / "javac.exe").is_file():
+        _install_zip(JDK_URL, JDK_SHA256, JDK_DIRNAME, jdk_dir(), f"Java {JDK_VERSION}", progress, cancel, 1, 30)
+    if not (ghidra_dir() / "support" / "analyzeHeadless.bat").is_file():
+        _install_zip(GHIDRA_URL, GHIDRA_SHA256, GHIDRA_DIRNAME, ghidra_dir(), f"Ghidra {GHIDRA_VERSION}",
+                     progress, cancel, 30, 99)
 
 
 def install_rea(progress: Progress, cancel: threading.Event, version: str = REA_VERSION) -> None:
@@ -184,6 +239,21 @@ def setup(progress: Progress, cancel: threading.Event, update: bool = False) -> 
     ensure_node(progress, cancel)
     if update or not rea_js().is_file():
         install_rea(progress, cancel, "latest" if update else REA_VERSION)
+
+
+def doctor_ghidra() -> tuple[bool, str]:
+    """REA's own check of the installed Ghidra + JDK: (healthy, detail)."""
+    out = root() / "doctor.json"
+    code, err = run(["doctor", "--json"], out, timeout=300)
+    try:
+        checks = json.loads(out.read_text("utf-8", "replace")).get("checks") or []
+    except (OSError, ValueError, AttributeError):
+        return False, (err or f"rea doctor exited {code}")[-400:]
+    mine = [c for c in checks if isinstance(c, dict) and str(c.get("name", "")).startswith("ghidra")]
+    bad = [c for c in mine if not c.get("ok")]
+    if not mine:
+        return False, "rea doctor reported no Ghidra check"
+    return not bad, "; ".join(f"{c.get('name')}: {c.get('detail') or c.get('classification')}" for c in bad)[:600]
 
 
 def mcp_command() -> tuple[str, list[str]]:

@@ -19,9 +19,18 @@ all of REA's tools too.
 ## What it looks at
 
 Native binaries (PE/ELF/Mach-O), .NET assemblies, Electron / packed JavaScript,
-archives, and Godot / Unity / Unreal game data — whatever you point it at. Native
-pseudocode and xrefs need a local Ghidra, IDA or Hopper; static JS / .NET / desktop /
-PE inspection needs nothing extra.
+archives, and Godot / Unity / Unreal game data — whatever you point it at. Static JS /
+.NET / desktop / PE inspection needs nothing extra.
+
+**Native decompiler, one click.** Point at an EXE or DLL and press **Add native
+decompiler**: the plugin installs Ghidra 12.1.4 with its own JDK 21 (~650 MB,
+SHA-checked, cancellable, nothing system-wide) and REA's doctor checks it. Every EXE/DLL
+then gets **Decompile** (entry function pseudocode) and a native Ghidra overview, and
+agents' `rea__*` tools use the same Ghidra.
+
+**Long runs.** JavaScript analysis may run up to 8 hours on a huge app. If it hits that
+limit the run ends **partial** with a summary of everything found, not an error. Runs
+survive a plugin update mid-run.
 
 > [!NOTE] Only point it at software you own or are authorised to examine.
 > The plugin inspects whatever path you give it and keeps no block list; honouring the

@@ -96,7 +96,7 @@
         const pct = typeof st.percent === "number" ? st.percent : null;
         box.innerHTML = `<div class="dk-card dk-stack">
           <div class="row" style="justify-content:space-between">
-            <div class="dk-card__title"><span class="spin"></span> Getting REA ready${pct !== null ? ` · ${pct}%` : ""}</div>
+            <div class="dk-card__title"><span class="spin"></span> ${st.ready ? "Adding the native decompiler" : "Getting REA ready"}${pct !== null ? ` · ${pct}%` : ""}</div>
             <button class="dk-btn" id="doCancel">Cancel</button></div>
           <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" ${pct !== null ? `aria-valuenow="${pct}"` : ""}><i style="width:${pct ?? 15}%"></i></div>
           <div class="dk-muted">${esc(st.step || "Starting…")} You can keep working: it also shows in the top bar's activity list.</div></div>`;
@@ -203,23 +203,31 @@
           ${can ? `<button class="dk-btn" data-op="${esc(g.operation)}" data-path="${esc(ex.path)}">Run</button>` : ""}</div>`;
       }).join("");
       const lims = [...(d.limitations || []), ...(d.unknowns || [])].map((l) => `<li>${esc(l)}</li>`).join("");
+      const code = typeof r.details?.normalized_result === "string" ? r.details.normalized_result.trim() : "";
+      const native = s.format === "pe" && !st.ghidra ? `<div class="dk-card dk-stack">
+          <div class="dk-card__title">Want its pseudocode?</div>
+          <div class="dk-muted">Add the native decompiler once: Ghidra ${esc(st.ghidra_version)} with its own Java ${esc(st.jdk_version)} (about 650 MB, SHA-checked, cancellable, nothing system-wide). Then every EXE and DLL gets Decompile and a native overview.</div>
+          <div><button class="dk-btn dk-btn--primary" id="addGhidra">Add native decompiler</button></div></div>` : "";
       $("view").innerHTML = `
         <div class="dk-card dk-stack">
           <div class="dk-card__title">${esc(r.name)}</div>
           <div class="mono dk-muted">${esc(r.target)}</div>
-          ${r.ok ? `<div class="chips">${chips}</div>` : `<div class="dk-error">${esc(r.error)}${r.remediation ? `<div class="dk-muted">${esc(r.remediation)}</div>` : ""}</div>`}
+          ${r.ok ? `<div class="chips">${chips}</div>${r.note ? `<div class="dk-muted">${esc(r.note)}</div>` : ""}` : `<div class="dk-error">${esc(r.error)}${r.remediation ? `<div class="dk-muted">${esc(r.remediation)}</div>` : ""}</div>`}
           <div class="row" style="justify-content:flex-start">
             <input class="dk-input grow" id="q" placeholder="Ask about it: how does search work? what engine is this?" aria-label="Question for the agent">
             <button class="dk-btn dk-btn--primary" id="ask">Investigate with agent</button>
           </div>
         </div>
+        ${code ? `<div class="dk-card"><div class="dk-card__title">Pseudocode</div><pre>${esc(code)}</pre></div>` : ""}
         ${cands ? `<div class="dk-stack"><div class="dk-card__title">What it is</div><div class="cards">${cands}</div></div>` : ""}
         ${probes ? `<div class="dk-card"><div class="dk-card__title">Look deeper (one click)</div>${probes}</div>` : ""}
+        ${native}
         ${lims ? `<details class="dk-card"><summary>Limits and unknowns</summary><ul>${lims}</ul></details>` : ""}
         <details class="dk-card"><summary>Full result</summary>
           <div class="dk-muted mono">${esc(r.result_path)} · ${esc(Math.round((r.result_bytes || 0) / 1024))} KB</div>
           <pre>${r.details ? esc(JSON.stringify(r.details, null, 2)) : "Too big to show here: Investigate with agent reads it with REA's view tools."}</pre></details>`;
       $("ask").onclick = () => investigate(r.target, $("q").value, r.id);
+      if ($("addGhidra")) $("addGhidra").onclick = async () => { await rpc("setup", { ghidra: true }); loadStatus(); $("addGhidra").closest(".dk-card").remove(); };
       $("q").onkeydown = (ev) => { if (ev.key === "Enter") $("ask").click(); };
       $("view").querySelectorAll("[data-op]").forEach((b) => b.onclick = () => runProbe(b.dataset.op, b.dataset.path));
     }
