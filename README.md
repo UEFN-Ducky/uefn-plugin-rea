@@ -16,6 +16,19 @@ all of REA's tools too.
   background jobs you can watch or cancel; results too big to read inline come back as
   a short summary with next probes.
 
+## Guided, step by step
+
+The panel walks you through **Get ready → Pick something → Look inside → Results →
+Recreate**: live %, a step log and elapsed time while REA works, a plain answer with
+charts and confidence meters after, and one-click "look deeper" probes. Switches for
+**Explain as I go**, **Technical details** and **History**. Everything keeps running
+when you close the tab and shows in the top bar's activity list, with Cancel.
+
+**Recreate it.** From a result, an agent (or a team of agents) rebuilds the app as
+your own original code in `Documents/REA Recreations/<name>/`. The **Recreations**
+tab lists them all; open one to see its milestones live, its files, its chat and
+folder. Many can build at once.
+
 ## What it looks at
 
 Native binaries (PE/ELF/Mach-O), .NET assemblies, Electron / packed JavaScript,
@@ -41,9 +54,9 @@ survive a plugin update mid-run.
 | Path | What |
 |------|------|
 | `plugin.json` | Manifest: panels, header button, walkthrough, automation node, agent tools. |
-| `backend/__init__.py` | `register(api)`: auto-setup, background runs, result summarization, MCP wiring. |
+| `backend/__init__.py` | `register(api)`: auto-setup, background runs, result summarization, recreations, MCP wiring. |
 | `backend/runtime.py` | Pinned Node download, REA install, run/cancel, progress parsing. |
-| `ui/index.html` | Setup card, drop zone, pickers, live progress, Cancel. |
+| `ui/index.html` | 5-step wizard (setup, pick, live progress, results, recreate) and the Recreations gallery. |
 | `skills/rea/SKILL.md` | Agent skill. |
 | `scripts/` | `build_zip.py`, `commit_before_store.py`, `release.py`. |
 

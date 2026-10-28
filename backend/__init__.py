@@ -7,6 +7,7 @@ agents get every REA tool through the nested `rea` MCP server this plugin regist
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -37,6 +38,14 @@ _BY_EXT = {
 }
 SETUP_JOB_ID = "plugin:rea:setup"
 RUN_JOB_PREFIX = "plugin:rea:run:"
+REC_JOB_PREFIX = "plugin:rea:rec:"
+# Plain words for the top bar's activity list (anything else: the command with spaces).
+_CMD_LABEL = {
+    "inspect-desktop-application": "Scanning the app", "inspect-artifact": "Reading the file",
+    "analyze-javascript-application": "Reading its app code", "inspect-pe-imports": "Checking what it asks Windows for",
+    "inspect-il2cpp-metadata": "Recovering Unity class names", "inspect-managed-artifact": "Reading its .NET code",
+    "decompile": "Decompiling", "analyze": "Native overview",
+}
 _SUMMARY_CMDS = {"inspect-artifact", "inspect-desktop-application"}
 # REA's inventory of a PE has no follow-ups of its own; these one-shot readers apply to any EXE/DLL.
 _PE_PROBES = [
@@ -53,6 +62,47 @@ _NATIVE_PROBES = [
 ]
 # Next probes that need an open REA session (MCP), not a one-shot CLI call.
 _SESSION_OPS = {"open_binary"}
+# Recreations: one subfolder each, in a folder the person can browse (and a Ducky project agents write to).
+RECREATION_STATUSES = ("building", "done", "blocked", "stopped")
+BRIEF_NAME = "REA-BRIEF.md"
+_SCAN_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", "target", ".next"}
+
+
+def recreations_root() -> Path:
+    return Path.home() / "Documents" / "REA Recreations"
+
+
+def _slug(name: str) -> str:
+    s = re.sub(r"\s+", " ", re.sub(r"[^A-Za-z0-9 ._-]+", " ", str(name or ""))).strip(" .")
+    return s[:60].rstrip(" .") or "Recreation"
+
+
+def _unique_folder(root: Path, name: str) -> Path:
+    base = _slug(name)
+    for i in range(1, 1000):
+        p = root / (base if i == 1 else f"{base} ({i})")
+        if not p.exists():
+            return p
+    return root / f"{base} {uuid.uuid4().hex[:6]}"
+
+
+def _scan(folder: Path, limit: int = 200) -> dict:
+    """What an agent has written so far: file count, size, newest change and the first files."""
+    files, count, size, newest = [], 0, 0, 0.0
+    for base, dirs, names in os.walk(folder):
+        dirs[:] = sorted(d for d in dirs if d not in _SCAN_SKIP)  # never descend into deps or build output
+        for n in sorted(names):
+            p = Path(base) / n
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            count += 1
+            size += st.st_size
+            newest = max(newest, st.st_mtime)
+            if len(files) < limit:
+                files.append({"path": p.relative_to(folder).as_posix(), "bytes": st.st_size, "modified": int(st.st_mtime)})
+    return {"file_count": count, "bytes": size, "last_change": int(newest), "files": files}
 
 
 def _plan(path: Path) -> list[str]:
@@ -268,6 +318,8 @@ def register(api) -> None:
         jid = str(job_id or "").strip()
         if jid.startswith(RUN_JOB_PREFIX):
             return cancel_run(jid[len(RUN_JOB_PREFIX):])
+        if jid.startswith(REC_JOB_PREFIX):  # Stop on a recreation's row: mark it stopped (its chat keeps its history)
+            return recreation_update(jid[len(REC_JOB_PREFIX):], "Stopped from the top bar.", "stopped")
         if jid and jid != SETUP_JOB_ID:
             return cancel_run(jid)
         if state["busy"]:
@@ -295,14 +347,20 @@ def register(api) -> None:
         return doc
 
     def _run_row(doc: dict, step: str = "", percent=None) -> None:
-        phase = {"running": "working", "done": "done", "partial": "done"}.get(doc["status"], "error")
-        detail = step or {"running": f"Looking inside {Path(doc['target']).name}…", "done": f"Done in {doc.get('seconds', 0)} s.",
-                          "partial": _PARTIAL_NOTE, "cancelled": "Cancelled."}.get(doc["status"], doc.get("error", "")[:200])
+        status = doc.get("status") or "cancelled"  # runs saved by early versions have no status
+        cmd = doc.get("command") or ""
+        phase = {"running": "working", "done": "done", "partial": "done"}.get(status, "error")
+        label = _CMD_LABEL.get(cmd, cmd.replace("-", " ").capitalize())
+        if status == "running":
+            detail = f"{label}{f' · {percent}%' if isinstance(percent, (int, float)) else ''} · {step or 'starting…'}"
+        else:
+            detail = {"done": f"{label}: done in {doc.get('seconds', 0)} s. Open Reverse Engineer for the results.",
+                      "partial": _PARTIAL_NOTE, "cancelled": "Cancelled."}.get(status, (doc.get("error") or "")[:200])
         try:
             from frontend.ui_web.agent_modes import push_ui_event
 
             push_ui_event({"type": "background_job", "id": f"{RUN_JOB_PREFIX}{doc['id']}", "source": "plugin",
-                           "title": f"Reverse Engineer: {doc['name']}", "detail": detail, "percent": percent,
+                           "title": f"REA · {Path(doc.get('target') or '').name or doc.get('target') or doc['id']}", "detail": detail, "percent": percent,
                            "phase": phase, "cancelable": phase == "working"})
         except Exception:  # noqa: BLE001
             pass
@@ -463,10 +521,26 @@ def register(api) -> None:
 
     def cancel_run(run_id: str) -> dict:
         stop = runs_live.get(run_id)
-        if stop is None:
-            return {"ok": False, "error": f"{run_id!r} isn't running."}
-        stop.set()
-        return {"ok": True, "cancelling": run_id}
+        if stop is not None:
+            stop.set()
+            return {"ok": True, "cancelling": run_id}
+        # Not ours any more (started by an older copy of the plugin, or its thread is gone): its REA
+        # process may still be working. Find it by command line, stop it, and close its row either way.
+        doc = data.get(f"run.{run_id}")
+        if not doc:
+            _run_row({"id": run_id, "target": run_id, "command": "", "status": "cancelled"})
+            return {"ok": True, "cancelled": run_id, "note": "No such run; its row is closed."}
+        target, cmd = doc.get("target") or "", doc.get("command") or ""
+        busy_elsewhere = any((data.get(f"run.{rid}") or {}).get("target") == target
+                             and (data.get(f"run.{rid}") or {}).get("command") == cmd for rid in runs_live)
+        killed = [] if busy_elsewhere else runtime.kill_matching(cmd, target)
+        if doc.get("status") in (None, "running"):
+            doc.update(status="cancelled", ok=False, error="Cancelled.")
+            doc.pop("step", None)
+            doc.pop("percent", None)
+            _put_run(doc)
+        _run_row(doc)
+        return {"ok": True, "cancelled": run_id, "stopped_processes": killed}
 
     def _slim(doc: dict) -> dict:
         return {k: v for k, v in doc.items() if k != "details"}
@@ -548,20 +622,215 @@ def register(api) -> None:
                          + f". Candidates: {json.dumps(d.get('candidates') or [])[:1500]}")
         if not runtime.ready():
             lines.append("REA isn't set up yet: call rea_setup(wait=true) first.")
+        out = _open_chat(f"Reverse engineer {Path(t).name or t}", "\n".join(lines), navigate=True)
+        return {**out, "message": "\n".join(lines)} if out.get("ok") else out
+
+    def _first_id(res) -> str:
+        res = res or {}
+        return str(res.get("conv_id") or res.get("group_id") or res.get("id")
+                   or (res.get("chat") or {}).get("id") or (res.get("group") or {}).get("id") or "")
+
+    def _chat_group() -> str:
+        """The 'REA Recreations' chat group every recreation chat goes in (made once, then remembered)."""
+        mark = Path(api.local_dir("state")) / "chat_group.json"
         try:
-            chat = api.call_tool("ducky_create_chat", {"title": f"Reverse engineer {Path(t).name or t}"[:60]})
-            conv = (chat or {}).get("conv_id") or (chat or {}).get("id") or ((chat or {}).get("chat") or {}).get("id")
+            gid = json.loads(mark.read_text("utf-8")).get("id", "")
+            if gid:
+                return gid
+        except (OSError, ValueError):
+            pass
+        try:
+            gid = _first_id(api.call_tool("ducky_create_folder", {"name": "REA Recreations"}))
+        except Exception as exc:  # noqa: BLE001
+            api.log(f"REA Recreations chat group: {exc}")
+            return ""
+        if gid:
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            mark.write_text(json.dumps({"id": gid}), "utf-8")
+        return gid
+
+    def _open_chat(title: str, message: str, folder_id: str = "", navigate: bool = False) -> dict:
+        try:
+            args = {"title": title[:60], **({"folder_id": folder_id} if folder_id else {})}
+            conv = _first_id(api.call_tool("ducky_create_chat", args))
+            if not conv and folder_id:  # the group went away: fall back to the sidebar root
+                conv = _first_id(api.call_tool("ducky_create_chat", {"title": title[:60]}))
             if not conv:
-                return {"ok": False, "error": "Couldn't open a chat for the investigation."}
-            api.call_tool("ducky_send_chat_message", {"conv_id": conv, "message": "\n".join(lines),
-                                                       "wait_for_reply": False})
-            try:
-                api.call_tool("ducky_ui_navigate", {"route": "chat", "item_id": conv})
-            except Exception:  # noqa: BLE001
-                pass
+                return {"ok": False, "error": "Couldn't open a chat."}
+            api.call_tool("ducky_send_chat_message", {"conv_id": conv, "message": message, "wait_for_reply": False})
+            if navigate:
+                try:
+                    api.call_tool("ducky_ui_navigate", {"route": "chat", "item_id": conv})
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
-        return {"ok": True, "conv_id": conv, "message": "\n".join(lines)}
+        return {"ok": True, "conv_id": conv}
+
+    # ---- recreations -----------------------------------------------------------------
+
+    def _rec_row(doc: dict) -> None:
+        """A recreation's row in the top bar's activity list: its newest milestone, live, tab open or not."""
+        phase = {"building": "working", "done": "done"}.get(doc["status"], "error")
+        last = ((doc.get("notes") or [{}])[-1]).get("text", "")
+        detail = {"done": f"Done. {last}", "stopped": "Stopped.", "blocked": f"Blocked: {last}"}.get(doc["status"], last)
+        try:
+            from frontend.ui_web.agent_modes import push_ui_event
+
+            push_ui_event({"type": "background_job", "id": f"{REC_JOB_PREFIX}{doc['id']}", "source": "plugin",
+                           "title": f"Recreating · {doc['name'].removesuffix(' recreation')}"
+                                    f"{' (team)' if doc.get('mode') == 'team' else ''}",
+                           "detail": detail[:200], "percent": doc.get("percent"),
+                           "phase": phase, "cancelable": phase == "working"})
+        except Exception:  # noqa: BLE001 — no app host in tests
+            pass
+
+    def _put_rec(doc: dict) -> dict:
+        data.put(f"recreation.{doc['id']}", doc)
+        _rec_row(doc)
+        try:
+            api.search.upsert(doc["id"], doc["name"], f"recreation {doc['goal']} {doc['target']}")
+        except Exception:  # noqa: BLE001
+            pass
+        _push("recreations_changed", id=doc["id"])
+        return doc
+
+    def _rec_view(doc: dict, files: bool = False) -> dict:
+        scan = _scan(Path(doc["folder"]), 200 if files else 0)
+        if not files:
+            scan.pop("files", None)
+        return {**doc, **scan, "folder_exists": Path(doc["folder"]).is_dir()}
+
+    def recreate(run_id: str = "", goal: str = "", mode: str = "solo", target: str = "") -> dict:
+        run = data.get(f"run.{run_id}") if run_id else None
+        t = str(target or (run or {}).get("target") or "").strip()
+        if not t:
+            return {"ok": False, "error": "Say what to recreate: pick an analysis (run_id) or a target path."}
+        mode = "team" if str(mode).lower() == "team" else "solo"
+        what = str(goal or "").strip() or "A working recreation of its main features and look."
+        name = Path(t).name or t
+        folder = _unique_folder(recreations_root(), name)
+        try:
+            folder.mkdir(parents=True)
+        except OSError as exc:
+            return {"ok": False, "error": f"Couldn't make the folder {folder}: {exc}"}
+        rec_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+        d = (run or {}).get("digest") or {}
+        brief = [f"# Recreate: {name}", "", f"- **Original:** `{t}`", f"- **Goal:** {what}",
+                 f"- **Mode:** {'Team of agents' if mode == 'team' else 'One agent'}", f"- **Recreation id:** `{rec_id}`"]
+        if run:
+            brief += [f"- **REA analysis:** `{run_id}` (full result: `{run.get('result_path', '')}`)", "",
+                      "## What REA found", "```json", json.dumps({k: d.get(k) for k in ("subject", "candidates", "counts")}, indent=2)[:6000], "```"]
+        (folder / BRIEF_NAME).write_text("\n".join(brief) + "\n", "utf-8")
+        doc = {"id": rec_id, "name": f"{name} recreation", "target": t, "goal": what, "mode": mode,
+               "run_id": run_id if run else "", "folder": str(folder), "conv_id": "", "status": "building",
+               "created": int(time.time()), "updated": int(time.time()),
+               "notes": [{"t": int(time.time()), "text": "Folder made, brief written. Agent starting…"}]}
+        _put_rec(doc)
+        api.changeset.record(command="rea_recreate", kind="recreation", ident=rec_id, facet="record", before=None,
+                             inverse=[{"command": "rea_recreation_delete", "params": {"recreation_id": rec_id}}],
+                             slot=f"{pid}://recreation/{rec_id}/record")
+        lines = [
+            f"Recreate {name} from its REA reverse engineering. Recreation id: {rec_id}.",
+            f"Goal: {what}",
+            f"Work ONLY inside this folder (it's yours): {folder}",
+            f"Start by reading {folder / BRIEF_NAME}. Dig deeper with REA: "
+            + (f"rea_get('{run_id}'), " if run else "") + "rea_probe / rea_analyze, and the rea__* tools "
+            "(ducky_get_tools('rea')). Read big result files with rea__inspect_analysis_view.",
+            "Rebuild it as original code: match what it does and how it looks; never copy its binaries, assets or "
+            "proprietary code. Keep README.md in the folder current: what it is and how to run it.",
+            f"Report each milestone with rea_recreation_update(recreation_id='{rec_id}', note='<what just happened>', "
+            "percent=<0-100>) so the person sees it live in the Reverse Engineer panel. At the end call it with "
+            "status='done' (or status='blocked' and the reason).",
+        ]
+        if mode == "team":
+            lines.append("Work as a team: write the plan with ducky_create_plan (research with REA, core logic, UI, "
+                         "tests, one sub plan each with its own subfolder of the recreation folder as its Files), "
+                         "then seat it with ONE ducky_swarm_create(from_plan=true) call. You lead and review; "
+                         "members report milestones with rea_recreation_update too.")
+        out = _open_chat(f"Recreate {name}", "\n".join(lines), folder_id=_chat_group())
+        if not out.get("ok"):
+            doc.update(status="blocked", notes=doc["notes"] + [{"t": int(time.time()), "text": out.get("error", "")}])
+            _put_rec(doc)
+            return {"ok": False, "error": out.get("error"), "recreation": _rec_view(doc)}
+        doc["conv_id"] = out["conv_id"]
+        _put_rec(doc)
+        return {"ok": True, "recreation": _rec_view(doc)}
+
+    rec_lock = threading.Lock()
+
+    def recreation_update(recreation_id: str = "", note: str = "", status: str = "", percent=None) -> dict:
+        if status and status not in RECREATION_STATUSES:
+            return {"ok": False, "error": f"status must be one of {', '.join(RECREATION_STATUSES)}."}
+        # ponytail: one lock per app process; team members updating at once append in turn.
+        with rec_lock:
+            return _recreation_update(recreation_id, note, status, percent)
+
+    def _recreation_update(recreation_id: str, note: str, status: str, percent) -> dict:
+        doc = data.get(f"recreation.{recreation_id}") if recreation_id else None
+        if not doc:
+            return {"ok": False, "error": f"No recreation {recreation_id!r}."}
+        if status:
+            doc["status"] = status
+        if percent not in (None, ""):
+            doc["percent"] = max(0, min(100, int(float(percent))))
+        if status == "done":
+            doc["percent"] = 100
+        if note:
+            doc["notes"] = (doc.get("notes") or []) + [{"t": int(time.time()), "text": str(note)[:500]}]
+            doc["notes"] = doc["notes"][-50:]
+        doc["updated"] = int(time.time())
+        _put_rec(doc)
+        if status in ("done", "blocked"):
+            _alert(f"{doc['name']}: {status}.", "ok" if status == "done" else "error")
+        return {"ok": True, "recreation": _rec_view(doc)}
+
+    def list_recreations() -> dict:
+        rows = sorted(data.items("recreation.").values(), key=lambda d: d.get("created", 0), reverse=True)
+        return {"ok": True, "root": str(recreations_root()), "recreations": [_rec_view(r) for r in rows]}
+
+    def get_recreation(recreation_id: str = "") -> dict:
+        doc = data.get(f"recreation.{recreation_id}") if recreation_id else None
+        if not doc:
+            return {"ok": False, "error": f"No recreation {recreation_id!r}."}
+        return {"ok": True, "recreation": _rec_view(doc, files=True)}
+
+    def delete_recreation(recreation_id: str = "", delete_files: bool = False) -> dict:
+        doc = data.get(f"recreation.{recreation_id}") if recreation_id else None
+        if not doc:
+            return {"ok": False, "error": f"No recreation {recreation_id!r}."}
+        folder = Path(doc["folder"])
+        if delete_files and folder.is_dir() and recreations_root() in folder.resolve().parents:
+            shutil.rmtree(folder, ignore_errors=True)
+        data.delete(f"recreation.{recreation_id}")
+        try:
+            api.search.delete(recreation_id)
+        except Exception:  # noqa: BLE001
+            pass
+        api.changeset.record(command="rea_recreation_delete", kind="recreation", ident=recreation_id, facet="record",
+                             before=doc, inverse=[], slot=f"{pid}://recreation/{recreation_id}/record")
+        _push("recreations_changed", id=recreation_id)
+        return {"ok": True, "id": recreation_id, "files_deleted": bool(delete_files)}
+
+    def open_recreation(recreation_id: str = "", what: str = "folder") -> dict:
+        doc = data.get(f"recreation.{recreation_id}") if recreation_id else None
+        if what == "root" or not doc:
+            if what != "root":
+                return {"ok": False, "error": f"No recreation {recreation_id!r}."}
+            folder = recreations_root()
+            folder.mkdir(parents=True, exist_ok=True)
+        elif what == "chat":
+            if not doc.get("conv_id"):
+                return {"ok": False, "error": "This recreation has no chat."}
+            api.call_tool("ducky_ui_navigate", {"route": "chat", "item_id": doc["conv_id"]})
+            return {"ok": True, "conv_id": doc["conv_id"]}
+        else:
+            folder = Path(doc["folder"])
+        if not folder.is_dir():
+            return {"ok": False, "error": f"The folder is gone: {folder}"}
+        if sys.platform == "win32":
+            os.startfile(str(folder))  # noqa: S606 — opens Explorer on the person's own folder
+        return {"ok": True, "folder": str(folder)}
 
     # ---- MCP tools ---------------------------------------------------------------
 
@@ -626,6 +895,40 @@ def register(api) -> None:
         question with evidence. Works for websites too."""
         return investigate(target, question, run_id)
 
+    @api.tool(intent=INTENT, listener=False)
+    def rea_recreate(run_id: str = "", goal: str = "", mode: str = "solo", target: str = "") -> dict:
+        """Recreate an analysed app as original code: makes Documents/REA Recreations/<name>/ with a brief
+        (REA's findings), then opens a chat in the 'REA Recreations' chat group where an agent builds it.
+        mode='team' has that agent plan and seat a multi-agent team. Many recreations can run at once."""
+        return recreate(run_id, goal, mode, target)
+
+    @api.tool(intent=INTENT, listener=False)
+    def rea_recreation_update(recreation_id: str, note: str = "", status: str = "", percent: float = -1) -> dict:
+        """Agents building a recreation report here: note = one milestone shown live in the panel,
+        percent = 0-100, status = building | done | blocked | stopped."""
+        return recreation_update(recreation_id, note, status, None if percent is None or percent < 0 else percent)
+
+    @api.tool(intent=INTENT, listener=False)
+    def rea_recreations() -> dict:
+        """Every recreation, newest first: status, folder, file count, last change."""
+        return list_recreations()
+
+    @api.tool(intent=INTENT, listener=False)
+    def rea_recreation_get(recreation_id: str) -> dict:
+        """One recreation with its milestone notes and the files written so far."""
+        return get_recreation(recreation_id)
+
+    @api.tool(intent=INTENT, listener=False)
+    def rea_recreation_delete(recreation_id: str, delete_files: bool = False) -> dict:
+        """Remove a recreation from the list; delete_files=true also deletes its folder."""
+        return delete_recreation(recreation_id, delete_files)
+
+    @api.tool(intent=INTENT, listener=False)
+    def rea_recreation_open(recreation_id: str = "", what: str = "folder") -> dict:
+        """Open a recreation's folder in Explorer (what='folder'), its chat (what='chat'), or the
+        whole REA Recreations folder (what='root')."""
+        return open_recreation(recreation_id, what)
+
     # ---- workflow node -----------------------------------------------------------
 
     @api.register_pipeline_node("rea.run")
@@ -637,20 +940,35 @@ def register(api) -> None:
         run = out.get("run") or {}
         return {**out, "digest": run.get("digest") or {}, "summary": run.get("name") or out.get("error", "")}
 
+    @api.register_pipeline_node("rea.recreate")
+    def node_recreate(ctx: dict) -> dict:
+        cfg = ctx.get("config") or {}
+        inputs = ctx.get("inputs") or {}
+        pick = lambda k: str(inputs.get(k) or cfg.get(k) or "")  # noqa: E731
+        out = recreate(pick("run_id"), pick("goal"), pick("mode") or "solo", pick("target"))
+        rec = out.get("recreation") or {}
+        return {**out, "folder": rec.get("folder", ""), "conv_id": rec.get("conv_id", "")}
+
     # ---- panel -------------------------------------------------------------------
 
     api.register_panel_rpc("status", lambda: status())
     api.register_panel_rpc("setup", lambda update=False, ghidra=False: setup(bool(update), ghidra=bool(ghidra)))
     # The panel's Cancel and the header activity list's Cancel on this plugin's job row.
     api.register_panel_rpc("cancel_job", lambda job_id="": cancel_job(job_id))
-    # The panel waits briefly: quick looks come back at once, long ones show as running.
-    api.register_panel_rpc("analyze", lambda target="": analyze(target, 15))
-    api.register_panel_rpc("probe", lambda operation="", path="": probe(operation, path, 15))
+    # The panel barely waits: it shows the run's live steps (step 3) and flips to results on rea_runs_changed.
+    api.register_panel_rpc("analyze", lambda target="": analyze(target, 1))
+    api.register_panel_rpc("probe", lambda operation="", path="": probe(operation, path, 1))
     api.register_panel_rpc("runs", lambda limit=50: list_runs(limit))
     api.register_panel_rpc("get", lambda run_id="": get_run(run_id))
     api.register_panel_rpc("delete", lambda run_id="": delete_run(run_id))
     api.register_panel_rpc("apps", lambda: running_apps())
     api.register_panel_rpc("investigate", lambda target="", question="", run_id="": investigate(target, question, run_id))
+    api.register_panel_rpc("recreate", lambda run_id="", goal="", mode="solo", target="": recreate(run_id, goal, mode, target))
+    api.register_panel_rpc("recreations", lambda: list_recreations())
+    api.register_panel_rpc("recreation_get", lambda recreation_id="": get_recreation(recreation_id))
+    api.register_panel_rpc("recreation_update", lambda recreation_id="", note="", status="": recreation_update(recreation_id, note, status))
+    api.register_panel_rpc("recreation_delete", lambda recreation_id="", delete_files=False: delete_recreation(recreation_id, bool(delete_files)))
+    api.register_panel_rpc("recreation_open", lambda recreation_id="", what="folder": open_recreation(recreation_id, what))
 
     # ---- out of the box ------------------------------------------------------------
 
@@ -665,6 +983,10 @@ def register(api) -> None:
             _write_marker()
 
     if api.is_app():  # once, in the app; never per agent process
+        # Recreations outlive Ducky (their chats go on): show the ones still building in the top bar again.
+        for rec in data.items("recreation.").values():
+            if rec.get("status") == "building":
+                _rec_row(rec)
         if runtime.ready():
             threading.Thread(target=_register_once, name="rea-mcp-register", daemon=True).start()
         elif sys.platform == "win32" and api.is_enabled():

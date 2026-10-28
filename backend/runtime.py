@@ -116,6 +116,88 @@ def _env() -> dict:
     return env
 
 
+def _job_handle():
+    """One Windows Job Object per app process with KILL_ON_JOB_CLOSE: when Ducky exits or crashes,
+    Windows closes the handle and kills every REA process (and the workers they started) in it.
+    Kept in sys.modules so a plugin reinstall reuses it instead of dropping runs that are still going."""
+    import ctypes
+    import types
+    from ctypes import wintypes
+
+    holder = sys.modules.setdefault("_ducky_rea_job", types.ModuleType("_ducky_rea_job"))
+    if getattr(holder, "handle", None):
+        return holder.handle
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("Basic", Basic), ("IoInfo", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = Extended()
+    info.Basic.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):  # ExtendedLimitInformation
+        return None
+    holder.handle = job
+    return job
+
+
+def _die_with_app(proc: subprocess.Popen) -> None:
+    """Put ``proc`` in the app's kill-on-close job (Windows); its later children join it too."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        job = _job_handle()
+        if job:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            k32.AssignProcessToJobObject(job, int(proc._handle))
+    except Exception:  # noqa: BLE001 — best effort: Cancel and the timeout still stop it
+        pass
+
+
+def _matches(cmdline: str, needles: tuple[str, ...]) -> bool:
+    low = (cmdline or "").lower().replace("/", "\\")
+    return all(n.lower().replace("/", "\\") in low for n in needles)
+
+
+def kill_matching(command: str, target: str) -> list[int]:
+    """Stop REA processes (and their workers) running ``command`` on ``target`` that no run owns any more."""
+    if sys.platform != "win32" or not command or not target:
+        return []
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | "
+          "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                             text=True, encoding="utf-8", errors="replace", timeout=30,
+                             creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL).stdout
+        rows = json.loads(out or "[]")
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return []
+    rows = [rows] if isinstance(rows, dict) else rows or []
+    needles = (str(rea_js()), command, target)
+    pids = [int(r["ProcessId"]) for r in rows if _matches(r.get("CommandLine") or "", needles)]
+    for pid in pids:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL, timeout=30)
+    return pids
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     """REA and npm start worker processes: stop the whole tree, not just the parent."""
     if sys.platform == "win32":
@@ -218,6 +300,7 @@ def install_rea(progress: Progress, cancel: threading.Event, version: str = REA_
         cwd=str(app), env=_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         encoding="utf-8", errors="replace", creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL,
     )
+    _die_with_app(proc)
     tail: list[str] = []
     reader = threading.Thread(target=lambda: tail.extend(proc.stdout or []), daemon=True)
     reader.start()
@@ -298,6 +381,7 @@ def run(args: list[str], out_path: Path, cancel: threading.Event | None = None,
             [str(node_exe()), str(rea_js()), *args], cwd=str(root()), env=_env(), stdout=out, stderr=err,
             creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL,
         )
+        _die_with_app(proc)
         deadline = time.monotonic() + timeout
         seen = 0
         while True:

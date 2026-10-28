@@ -4,67 +4,184 @@
   <meta charset="utf-8">
   <script src="../../_kit/ducky.js"></script>
   <style>
-    body { margin: 0; }
-    .shell { display: grid; grid-template-columns: 260px 1fr; gap: 12px; height: 100vh; box-sizing: border-box; padding: 12px; }
-    .side { overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+    /* Every surface looks like the app's left sidebar (the kit's .dk-sidebar): --panel-header behind a hairline border. */
+    body { margin: 0; --card: var(--panel-header); --radius: var(--radius-sm);
+           font-family: var(--font-ui); font-size: calc(var(--font-ui-size, 13px) * 1.15); line-height: 1.5; color: var(--fg); }
+    .shell { display: grid; grid-template-columns: 1fr 250px; gap: 12px; height: 100vh; box-sizing: border-box; padding: 12px; }
+    .shell.nohist { grid-template-columns: 1fr; }
+    .shell.nohist .side { display: none; }
     .main { overflow: auto; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-    .drop { border: 2px dashed var(--border); border-radius: 14px; padding: 28px 18px; text-align: center;
-            display: flex; flex-direction: column; gap: 12px; align-items: center; transition: border-color .15s, background .15s; }
-    .drop.over { border-color: var(--accent); background: var(--card); }
-    .drop h2 { margin: 0; font-size: 1.25em; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; }
-    .grow { flex: 1; min-width: 220px; }
-    .run { text-align: left; width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
-           background: none; color: var(--fg); cursor: pointer; font: inherit; display: flex; gap: 6px; align-items: flex-start; }
-    .run:hover { background: var(--card); }
-    .run.on { background: var(--card); border-color: var(--border); }
-    .run .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .run .x { opacity: .5; padding: 0 4px; }
-    .run .x:hover { opacity: 1; }
-    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
-    .chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: .85em; }
-    .chip b { color: var(--accent); }
-    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-    .probe { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border); }
-    .probe:first-child { border-top: 0; }
-    .probe .t { flex: 1; min-width: 0; }
-    .probe code, .mono { font-family: var(--font-mono, monospace); font-size: .85em; word-break: break-all; }
-    .apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; width: 100%; }
-    .apps button { text-align: left; }
-    pre { white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; font-size: .8em; }
-    details summary { cursor: pointer; }
-    button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .side { overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+    .side.dk-sidebar { width: auto; }  /* the grid column sizes it, not the kit's 220px */
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .between { justify-content: space-between; }
+    .grow { flex: 1; min-width: 200px; }
+    .mono { font-family: var(--font-mono); font-size: .88em; word-break: break-all; }
+    h2 { margin: 0; font-family: var(--font-header, var(--font-ui)); font-size: 1.45em; }
+    h3 { margin: 0; font-family: var(--font-header, var(--font-ui)); font-size: 1.15em; }
+    .dk-muted { color: var(--fg-dim); }
+    button:focus-visible, input:focus-visible, summary:focus-visible, [tabindex]:focus-visible, .switch input:focus-visible + i {
+      outline: 2px solid var(--border-focus); outline-offset: 2px; }
+
+    /* what you picked: always visible on steps 3-5 */
+    .target { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-radius: var(--radius-sm);
+              border: 1px solid var(--accent); background: var(--card); box-shadow: inset 4px 0 0 var(--accent); }
+    .target .ic { font-size: 1.6em; }
+    .target .t { flex: 1; min-width: 0; }
+    .target .t b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .target .lbl { font-size: .78em; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); }
+    .preview { display: flex; gap: 8px; align-items: center; min-height: 1.6em; color: var(--fg-dim); }
+    .preview b { color: var(--fg); }
+
+    /* stepper */
+    .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+    body.recs .steps, body.recs #view, body.recs #target { display: none; }
+    body:not(.recs) #recView { display: none; }
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+    .rec { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 14px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+           background: var(--card); color: var(--fg); font: inherit; cursor: pointer; min-width: 0; }
+    .rec:hover { border-color: var(--accent); background: var(--card-hover); }
+    .rec b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dk-badge { width: fit-content; display: inline-flex; gap: 6px; align-items: center; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+    .stat { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); padding: 10px; }
+    .stat b { display: block; font-size: 1.4em; }
+    .stat span { font-size: .85em; color: var(--fg-dim); }
+    .notes { list-style: none; margin: 0; padding: 0 0 0 14px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+    .notes li { position: relative; }
+    .notes li::before { content: ""; position: absolute; left: -20px; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+    .notes time { font-size: .85em; color: var(--muted); margin-right: 6px; font-family: var(--font-mono); }
+    /* option lists (kit .dk-choice rows) sit on one sidebar-style panel */
+    .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 2px; padding: 4px;
+               border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); }
+    .choices .all { grid-column: 1 / -1; border-bottom: 1px solid var(--border); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+    .step { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+            background: var(--card); color: var(--fg); font: inherit; text-align: left; cursor: pointer; opacity: .55; min-width: 0; }
+    .step:hover:not(:disabled) { background: var(--tab-hover); }
+    .step:disabled { cursor: not-allowed; }
+    .step.done, .step.on { opacity: 1; }
+    .step.on { border-color: var(--accent); background: var(--tab-active); box-shadow: inset 0 -3px 0 var(--accent); }
+    .step .n { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+               border: 2px solid var(--border); font-size: .9em; }
+    .step.on .n { border-color: var(--accent); background: var(--accent); color: var(--fg-inverse); }
+    .step.done .n { border-color: var(--green); background: var(--green-dim); color: var(--green); }
+    .step.on .l b { color: var(--accent); }
+    .step .l { min-width: 0; }
+    .step .l b, .step .l span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .step .l span { font-size: .82em; color: var(--fg-dim); }
+
+    /* toolbar switches */
+    .switch { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; user-select: none; font-size: .9em; }
+    .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .switch i { width: 34px; height: 20px; border-radius: 999px; background: var(--border); position: relative; transition: background .15s; flex: none; }
+    .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+                       background: var(--fg-inverse); transition: left .15s; box-shadow: var(--shadow-sm); }
+    .switch:has(input:checked) { color: var(--fg); font-weight: 600; }
+    .switch:has(input:not(:checked)) { color: var(--fg-dim); }
+    .switch input:checked + i { background: var(--accent); }
+    .switch input:checked + i::after { left: 17px; }
+    .switch input:disabled + i { opacity: .5; }
+
+    /* hints (Explain as I go) */
+    .hint { display: flex; gap: 8px; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle, var(--border));
+            background: var(--card); font-size: .92em; color: var(--fg-dim); }
+    .hint b { color: var(--fg); }
+    .hint::before { content: "💡"; }
+    body.nohints .hint { display: none; }
+
+    /* pick tiles */
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .tile { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; text-align: left; padding: 16px; border-radius: var(--radius-sm);
+            border: 1px solid var(--border); background: var(--card); color: var(--fg); font: inherit; cursor: pointer; }
+    .tile:hover { border-color: var(--accent); background: var(--card-hover); }
+    .tile[aria-pressed="true"] { border-color: var(--accent); background: var(--tab-active); box-shadow: inset 0 -3px 0 var(--accent); }
+    .tile .ic { font-size: 2em; }
+    .tile b { font-size: 1.08em; }
+    .tile span { font-size: .88em; color: var(--fg-dim); }
+    .drop { border: 2px dashed var(--border); border-radius: var(--radius-sm); padding: 18px; text-align: center; transition: border-color .15s, background .15s; }
+    .drop.over { border-color: var(--accent); background: var(--tab-active); color: var(--accent); }
+    .apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+    .apps button { text-align: left; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; height: auto; padding: 8px 10px; }
+    .apps button:hover { border-color: var(--accent); }
+    .apps .sub { font-size: .82em; color: var(--fg-dim); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* progress */
     .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent);
             border-radius: 50%; animation: r 0.8s linear infinite; vertical-align: -2px; }
     @keyframes r { to { transform: rotate(360deg); } }
-    .bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; }
+    .bar { height: 10px; border-radius: 999px; background: var(--bg-hover); border: 1px solid var(--border-subtle, var(--border)); overflow: hidden; }
     .bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+    .bar.indet i { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
+    @keyframes slide { from { margin-left: -30%; } to { margin-left: 100%; } }
+    .big { font-size: 2em; font-weight: 700; }
+    .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+    .checks li { display: flex; gap: 8px; align-items: center; }
+    .checks .ok { color: var(--green); }
+    .checks .cur { font-weight: 600; }
+
+    /* results */
+    .verdict { display: flex; gap: 14px; align-items: center; }
+    .verdict .ic { font-size: 2.4em; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+    .meter { display: flex; gap: 8px; align-items: center; font-size: .85em; }
+    .meter .bar { flex: 1; height: 8px; }
+    .meter.high .bar i { background: var(--green); }
+    .meter.medium .bar i { background: var(--amber); }
+    .meter.low .bar i { background: var(--red); }
+    .chart { display: grid; grid-template-columns: minmax(90px, max-content) 1fr auto; gap: 6px 10px; align-items: center; font-size: .9em; }
+    .chart .bar { height: 12px; }
+    .next { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
+    .next:first-of-type { border-top: 0; }
+    .next .t { flex: 1; min-width: 0; }
+    .qchips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .qchip { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 12px; background: var(--card); color: var(--fg); font: inherit; font-size: .9em; cursor: pointer; }
+    .qchip:hover { border-color: var(--accent); background: var(--card-hover); }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    body:not(.tech) .techonly { display: none; }
+    pre { white-space: pre-wrap; word-break: break-all; max-height: 420px; overflow: auto; font-size: .8em; }
+    details summary { cursor: pointer; }
+
+    /* history */
+    .run { text-align: left; width: 100%; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid transparent;
+           background: none; color: var(--fg); cursor: pointer; font: inherit; display: flex; gap: 6px; align-items: flex-start; box-sizing: border-box; }
+    .run:hover { background: var(--tab-hover); }
+    .run.on { background: var(--tab-active); border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+    .run.on .t b { color: var(--accent); }
+    .run .t { flex: 1; min-width: 0; }
+    .run .t b, .run .t span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .run .t span { font-size: .82em; color: var(--fg-dim); }
+    .run .x { color: var(--muted); padding: 0 4px; border-radius: var(--radius-sm); }
+    .run .x:hover { color: var(--red); background: var(--red-dim); }
+    .s-ok { color: var(--green); } .s-err { color: var(--red); } .s-part { color: var(--amber); }
   </style>
 </head>
 <body class="dk-page">
-  <div class="shell">
-    <aside class="side dk-card" aria-label="Saved analyses">
-      <div class="dk-card__title">Analyses</div>
-      <div id="runs"><div class="dk-muted">None yet.</div></div>
-    </aside>
+  <div class="shell" id="shell">
     <main class="main">
-      <div id="setup"></div>
-      <section class="drop" id="drop" aria-label="Pick what to reverse engineer">
-        <h2>Point at anything</h2>
-        <div class="dk-muted">Drop an app folder, EXE, DLL, .asar, game pack or model file here, or pick one.</div>
-        <div class="row">
-          <button class="dk-btn dk-btn--primary" id="pickFolder">Pick a folder</button>
-          <button class="dk-btn" id="pickFile">Pick a file</button>
-          <button class="dk-btn" id="pickApp">Pick a running app</button>
+      <div class="row between">
+        <div class="row" style="gap:14px"><h2>Reverse Engineer</h2>
+          <div class="dk-tabs" role="tablist"><button class="dk-tab" id="tabAnalyze" role="tab" aria-selected="true">🔍 Analyze</button><button class="dk-tab" id="tabRecs" role="tab" aria-selected="false">🛠 Recreations <span id="recCount" class="dk-badge dk-badge--accent" hidden></span></button></div></div>
+        <div class="row" style="gap:16px">
+          <label class="switch" title="Short tips under every step"><input type="checkbox" id="optHints"><i></i>Explain as I go</label>
+          <label class="switch" title="Hashes, raw JSON, file paths"><input type="checkbox" id="optTech"><i></i>Technical details</label>
+          <label class="switch" title="Your past analyses"><input type="checkbox" id="optHist"><i></i>History</label>
         </div>
-        <div class="row" style="width:100%">
-          <input class="dk-input grow" id="path" placeholder="…or paste a path or website URL" aria-label="Path or URL">
-          <button class="dk-btn" id="go">Analyze</button>
-        </div>
-        <div id="apps" class="apps" hidden></div>
-      </section>
-      <div id="view"></div>
+      </div>
+      <nav class="steps" aria-label="Steps">
+        <button class="step" data-step="1"><span class="n">1</span><span class="l"><b>Get ready</b><span id="s1sub">One-time setup</span></span></button>
+        <button class="step" data-step="2"><span class="n">2</span><span class="l"><b>Pick something</b><span id="s2sub">App, folder or file</span></span></button>
+        <button class="step" data-step="3"><span class="n">3</span><span class="l"><b>Look inside</b><span id="s3sub">REA does the work</span></span></button>
+        <button class="step" data-step="4"><span class="n">4</span><span class="l"><b>Results</b><span id="s4sub">What it is, what next</span></span></button>
+        <button class="step" data-step="5"><span class="n">5</span><span class="l"><b>Recreate</b><span id="s5sub">Agents rebuild it</span></span></button>
+      </nav>
+      <div id="target" hidden></div>
+      <div id="view" class="dk-stack"><div class="dk-loading">Loading Reverse Engineer…</div></div>
+      <div id="recView" class="dk-stack"></div>
     </main>
+    <aside class="side dk-sidebar" aria-label="History">
+      <div class="dk-sidebar__title">History</div>
+      <div id="runs"><div class="dk-loading">Loading…</div></div>
+    </aside>
   </div>
   <script>
     const CHANNEL = "uefn-plugin-ui";
@@ -84,196 +201,575 @@
     const rpc = (method, params = {}) => call("plugin.call", { method, params });
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const $ = (id) => document.getElementById(id);
-    let current = "";
+    const human = (s) => String(s || "").replace(/[_-]+/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+
+    // ---- prefs (switches) ----
+    const prefs = (() => { try { return JSON.parse(localStorage.getItem("rea.prefs") || "{}"); } catch { return {}; } })();
+    const pref = (k, d) => (k in prefs ? prefs[k] : d);
+    function applyPrefs() {
+      document.body.classList.toggle("nohints", !pref("hints", true));
+      document.body.classList.toggle("tech", pref("tech", false));
+      $("shell").classList.toggle("nohist", !pref("hist", true));
+    }
+    for (const [id, k, d] of [["optHints", "hints", true], ["optTech", "tech", false], ["optHist", "hist", true]]) {
+      $(id).checked = pref(k, d);
+      $(id).onchange = () => { prefs[k] = $(id).checked; try { localStorage.setItem("rea.prefs", JSON.stringify(prefs)); } catch {} applyPrefs(); };
+    }
+    applyPrefs();
+
+    // Plain-English names for REA's next steps; anything else falls back to its humanized name.
+    const OPS = {
+      inspect_pe_imports: ["See what it asks Windows for", "Lists the system features it uses (files, network, graphics…). Quick."],
+      analyze_javascript_application: ["Read its app code", "Unpacks the JavaScript inside the app and maps its parts. Big apps take minutes."],
+      inspect_il2cpp_metadata: ["Recover the game's class names", "Unity games keep a list of their code names: this reads it."],
+      inspect_managed_artifact: ["Read its .NET code layout", "Shows the classes and methods inside a .NET program."],
+      inspect_asar_archive: ["Open the app's package", "Lists the files packed inside the .asar archive."],
+      decompile: ["Turn its start-up into readable code", "Shows the first function as C-like pseudocode."],
+      analyze: ["Native overview", "Functions, strings and sections of the program at a glance."],
+    };
+    const opInfo = (op) => OPS[op] || [human(op), ""];
+
+    // What a path most likely is, in plain words, so people know what they're about to analyze.
+    const KINDS = {
+      exe: ["⚙️", "Program"], dll: ["🧩", "Library (DLL)"], asar: ["📦", "Electron app package"], pck: ["🎮", "Godot game pack"],
+      pak: ["🎮", "Unreal game pack"], apk: ["📱", "Android app"], jar: ["☕", "Java archive"], zip: ["🗄", "Zip archive"],
+      gguf: ["🧠", "AI model"], safetensors: ["🧠", "AI model"], js: ["📜", "JavaScript file"], pyc: ["🐍", "Compiled Python"],
+      so: ["🧩", "Linux library"], dylib: ["🧩", "Mac library"], mp4: ["🎞", "Video (REA can't read these)"],
+    };
+    function kindOf(p) {
+      const s = String(p || "").trim().replace(/^"|"$/g, "");
+      if (!s) return null;
+      if (/^https?:\/\//i.test(s)) return ["🌐", "Website (an agent investigates it)"];
+      const ext = (/\.([a-z0-9]{1,12})$/i.exec(s.split(/[\\/]/).pop() || "") || [])[1]?.toLowerCase();
+      return ext ? KINDS[ext] || ["📄", `.${ext} file`] : ["📁", "Folder (an app or game install)"];
+    }
+    function paintTarget() {
+      const r = detail?.id === current ? detail : curRun();
+      const box = $("target");
+      if (!r || stage < 3) { box.hidden = true; return; }
+      const [ic, kind] = kindOf(r.target) || ["📄", ""];
+      box.hidden = false;
+      box.innerHTML = `<div class="target"><span class="ic">${ic}</span><div class="t"><div class="lbl">You picked · ${esc(kind)}</div>
+          <b title="${esc(r.target)}">${esc(baseName(r.target))}</b><div class="mono dk-muted">${esc(r.target)}</div></div>
+          <button class="dk-btn" id="changeTarget">Pick something else</button></div>`;
+      $("changeTarget").onclick = () => { current = ""; manual = 0; loadRuns().then(show); };
+    }
+
     let st = { ready: false };
+    let runs = [];
+    let current = "";          // open run id
+    let picked = "";           // last picked path (shown on step 3)
+    let stage = 0;             // 1..4
+    let manual = 0;            // step the person clicked (0 = follow the work)
+    const timeline = {};       // run id -> [{step, t}]
+    let tick = null;
 
-    // ---- setup ----
+    // ---- stage ----
+    function curRun() { return runs.find((r) => r.id === current); }
+    function autoStage() {
+      if (!st.ready) return 1;
+      const r = curRun();
+      if (r?.status === "running") return 3;
+      if (r) return 4;
+      return 2;
+    }
+    function paintSteps() {
+      const r = curRun();
+      const finished = !!r && r.status !== "running";
+      const rec = recFor(current);
+      const done = { 1: st.ready, 2: !!current, 3: finished, 4: finished && (stage === 5 || !!rec), 5: rec?.status === "done" };
+      const can = { 1: true, 2: st.ready, 3: !!r, 4: finished, 5: finished && (r.ok || r.status === "partial") };
+      document.querySelectorAll(".step").forEach((b) => {
+        const n = +b.dataset.step;
+        b.classList.toggle("on", n === stage);
+        b.classList.toggle("done", done[n] && n !== stage);
+        b.querySelector(".n").textContent = done[n] && n !== stage ? "✓" : n;
+        b.disabled = !can[n];
+        b.setAttribute("aria-current", n === stage ? "step" : "false");
+      });
+      $("s1sub").textContent = st.busy ? `Installing… ${typeof st.percent === "number" ? st.percent + "%" : ""}` : st.ready ? "Ready" : "One-time setup";
+      $("s3sub").textContent = r?.status === "running" ? (typeof r.percent === "number" ? `${r.percent}%` : "Working…") : "REA does the work";
+      $("s5sub").textContent = rec ? `${human(rec.status)}${typeof rec.percent === "number" && rec.status === "building" ? ` · ${rec.percent}%` : ""}` : "Agents rebuild it";
+    }
+    document.querySelectorAll(".step").forEach((b) => b.onclick = () => {
+      const n = +b.dataset.step;
+      if (n === 2) { current = ""; loadRuns(); }
+      manual = n; show();
+    });
+    function show() {
+      stage = manual || autoStage();
+      if (manual === 3 && curRun()?.status !== "running") manual = 0, stage = autoStage();
+      paintSteps();
+      paintTarget();
+      clearInterval(tick); tick = null;
+      ({ 1: viewSetup, 2: viewPick, 3: viewWorking, 4: viewResult, 5: viewRecreate })[stage]();
+    }
+
+    // ---- step 1: setup ----
     async function loadStatus() {
-      st = await rpc("status").catch(() => ({ ready: false, error: "Backend not loaded." }));
-      const box = $("setup");
-      if (st.ready && !st.busy) { box.innerHTML = ""; return; }
+      st = await rpc("status").catch(() => ({ ready: false, error: "The plugin's backend didn't load. Turn the plugin off and on again." }));
+      if (!manual && st.ready && stage === 1) manual = 0;
+      show();
+    }
+    function viewSetup() {
+      const pct = typeof st.percent === "number" ? st.percent : null;
+      const log = st.log || [];
+      const checklist = log.length ? `<ul class="checks">${log.map((l, i) => {
+        const last = i === log.length - 1 && st.busy;
+        return `<li class="${last ? "cur" : ""}">${last ? '<span class="spin"></span>' : '<span class="ok">✓</span>'} ${esc(l)}</li>`;
+      }).join("")}</ul>` : "";
+      let head;
       if (st.busy) {
-        const pct = typeof st.percent === "number" ? st.percent : null;
-        box.innerHTML = `<div class="dk-card dk-stack">
-          <div class="row" style="justify-content:space-between">
-            <div class="dk-card__title"><span class="spin"></span> ${st.ready ? "Adding the native decompiler" : "Getting REA ready"}${pct !== null ? ` · ${pct}%` : ""}</div>
+        head = `<div class="row between"><h3><span class="spin"></span> ${st.ready ? "Adding the code decompiler" : "Getting REA ready"}</h3>
             <button class="dk-btn" id="doCancel">Cancel</button></div>
-          <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" ${pct !== null ? `aria-valuenow="${pct}"` : ""}><i style="width:${pct ?? 15}%"></i></div>
-          <div class="dk-muted">${esc(st.step || "Starting…")} You can keep working: it also shows in the top bar's activity list.</div></div>`;
-        $("doCancel").onclick = async () => { await rpc("cancel_job"); };
-        return;
+          <div class="row" style="align-items:baseline;gap:12px"><span class="big">${pct ?? "…"}${pct !== null ? "%" : ""}</span><span class="dk-muted">${esc(st.step || "Starting…")}</span></div>
+          <div class="bar ${pct === null ? "indet" : ""}" role="progressbar" aria-valuemin="0" aria-valuemax="100" ${pct !== null ? `aria-valuenow="${pct}"` : ""}><i style="width:${pct ?? 0}%"></i></div>
+          ${checklist}
+          <div class="hint">You can close this tab and keep working. Progress also shows in the top bar's activity list.</div>`;
+      } else if (st.ready) {
+        head = `<h3><span class="s-ok">✓</span> REA ${esc(st.version || st.pinned)} is ready</h3>
+          <div class="dk-muted">Everything is installed in Ducky's own folder. Nothing was added to Windows.</div>
+          <div><button class="dk-btn dk-btn--primary" id="toPick">Next: pick something →</button></div>`;
+      } else {
+        head = `<h3>${st.cancelled ? "Setup was cancelled" : st.error ? "Setup didn't finish" : "Welcome! Let's get REA ready"}</h3>
+          <div>Reverse Engineer shows you <b>how any program is built</b>: which engine or framework it uses, what's inside it, and where its code lives.</div>
+          <ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px">
+            <li><b>Get ready</b>: one download (REA ${esc(st.pinned)} with its own Node ${esc(st.node)}), checked for tampering.</li>
+            <li><b>Pick something</b>: a running app, a game folder, an EXE or a file.</li>
+            <li><b>Look inside</b>: REA reads it. You watch every step live.</li>
+            <li><b>Results</b>: a plain answer plus one-click "look deeper" buttons.</li>
+          </ol>
+          ${st.error ? `<div class="dk-error">${esc(st.error)}</div>` : ""}
+          <div><button class="dk-btn dk-btn--primary" id="doSetup">${st.cancelled || st.error ? "Try again" : "Set up REA"}</button></div>
+          ${checklist}`;
       }
-      box.innerHTML = `<div class="dk-card dk-stack">
-        <div class="dk-card__title">${st.cancelled ? "Setup cancelled" : st.error ? "Setup didn't finish" : "REA isn't installed yet"}</div>
-        <div class="dk-muted">One download: REA ${esc(st.pinned)} with its own Node ${esc(st.node)} (SHA-checked, nothing system-wide). Your agents get its 229 tools too.</div>
-        ${st.error ? `<div class="dk-error">${esc(st.error)}</div>` : ""}
-        <div><button class="dk-btn dk-btn--primary" id="doSetup">${st.cancelled || st.error ? "Try again" : "Set up"}</button></div></div>`;
-      $("doSetup").onclick = async () => { await rpc("setup"); loadStatus(); };
+      $("view").innerHTML = `<div class="dk-card dk-stack">${head}</div>
+        <div class="dk-card dk-stack">
+          <div class="row between"><div><h3>Code decompiler (optional)</h3>
+            <div class="dk-muted">Lets REA turn EXE and DLL files into readable code. Ghidra ${esc(st.ghidra_version)} + Java ${esc(st.jdk_version)}, about 650 MB.</div></div>
+            <label class="switch"><input type="checkbox" id="ghidraSw" ${st.ghidra ? "checked disabled" : ""} ${st.busy || !st.ready ? "disabled" : ""}><i></i>${st.ghidra ? "Installed" : "Add it"}</label></div>
+          <div class="hint">Skip this unless you want to read a program's actual code. Folders, apps and game files work without it.</div>
+        </div>
+        <div class="dk-card techonly"><div class="dk-muted mono">Runtime folder: ${esc(st.runtime_folder)}</div></div>`;
+      if ($("doCancel")) $("doCancel").onclick = () => rpc("cancel_job");
+      if ($("doSetup")) $("doSetup").onclick = async () => { await rpc("setup"); loadStatus(); };
+      if ($("toPick")) $("toPick").onclick = () => { manual = 0; show(); };
+      $("ghidraSw").onchange = async (ev) => {
+        if (!ev.target.checked) return;
+        const ok = await call("ui.confirm", { title: "Add the code decompiler?", message: "Downloads about 650 MB (Ghidra + Java) into Ducky's folder. You can cancel at any time.", confirm: "Download" }).catch(() => null);
+        if (!ok?.confirmed) { ev.target.checked = false; return; }
+        await rpc("setup", { ghidra: true }); loadStatus();
+      };
     }
 
-    // ---- runs ----
-    async function loadRuns() {
-      const out = await rpc("runs").catch(() => ({ runs: [] }));
-      const box = $("runs");
-      if (!out.runs?.length) { box.innerHTML = '<div class="dk-muted">None yet.</div>'; return; }
-      box.innerHTML = out.runs.map((r) => `<div class="run ${r.id === current ? "on" : ""}" role="button" tabindex="0" data-id="${esc(r.id)}">
-        <span>${r.status === "running" ? '<span class="spin"></span>' : r.ok ? "●" : "✕"}</span><span class="t" title="${esc(r.target)}">${esc(r.name)}</span>
-        <span class="x" role="button" tabindex="0" aria-label="Delete" data-del="${esc(r.id)}">×</span></div>`).join("");
-      box.querySelectorAll(".run").forEach((el) => {
-        el.onclick = (ev) => { if (!ev.target.dataset.del) openRun(el.dataset.id); };
-        el.onkeydown = (ev) => { if (ev.key === "Enter") openRun(el.dataset.id); };
+    // ---- step 2: pick ----
+    function viewPick() {
+      $("view").innerHTML = `
+        <div class="hint">Not sure what to pick? Try <b>A running app</b>: open the program first, then choose it from the list.</div>
+        <div class="tiles">
+          <button class="tile" id="pickApp"><span class="ic">🪟</span><b>A running app</b><span>Choose from programs open right now. Easiest.</span></button>
+          <button class="tile" id="pickFolder"><span class="ic">📁</span><b>A folder</b><span>A game or app's install folder.</span></button>
+          <button class="tile" id="pickFile"><span class="ic">📄</span><b>A file</b><span>An EXE, DLL, .asar, game pack or 3D model.</span></button>
+        </div>
+        <div id="apps" class="apps" hidden></div>
+        <div class="drop" id="drop">…or <b>drag a file or folder here</b></div>
+        <div class="row">
+          <input class="dk-input grow" id="path" placeholder="…or paste a path, like C:\\Program Files\\MyGame" aria-label="Path or website" aria-describedby="preview">
+          <button class="dk-btn dk-btn--primary" id="go" disabled>Look inside →</button>
+        </div>
+        <div class="preview" id="preview" aria-live="polite"></div>
+        <div class="hint">Only examine software you own or are allowed to. Nothing is changed: REA only reads.</div>`;
+      $("go").onclick = () => analyze($("path").value);
+      $("path").oninput = () => {
+        const k = kindOf($("path").value);
+        $("go").disabled = !k;
+        $("preview").innerHTML = k ? `${k[0]} This looks like: <b>${esc(k[1])}</b>` : "";
+      };
+      $("path").onkeydown = (ev) => { if (ev.key === "Enter") analyze($("path").value); };
+      $("pickFolder").onclick = async () => { const o = await call("files.pickFolder").catch(() => ({})); if (o.folder) analyze(o.folder); };
+      $("pickFile").onclick = async () => { const o = await call("files.pick", { accept: "any" }).catch(() => ({})); const f = o.files?.[0]; if (f) analyze(f.path); };
+      $("pickApp").onclick = async () => {
+        const box = $("apps");
+        if (!box.hidden) { box.hidden = true; $("pickApp").setAttribute("aria-pressed", "false"); return; }
+        box.hidden = false;
+        $("pickApp").setAttribute("aria-pressed", "true");
+        box.innerHTML = '<div class="dk-loading">Finding open programs…</div>';
+        const out = await rpc("apps").catch((e) => ({ ok: false, error: e.message }));
+        if (!out.ok) { box.innerHTML = `<div class="dk-error">${esc(out.error)}</div>`; return; }
+        box.innerHTML = out.apps.map((a, i) => `<button class="dk-btn" data-i="${i}" title="Analyze the folder ${esc(a.folder)}"><b>${esc(a.name)}</b><span class="sub">${esc(a.title)}</span><span class="sub mono">📁 ${esc(a.folder)}</span></button>`).join("")
+          || '<div class="dk-empty"><div class="dk-empty__title">No open programs found</div>Open the app first, then press this again.</div>';
+        box.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => analyze(out.apps[+b.dataset.i].folder));
+      };
+      const drop = $("drop");
+      drop.addEventListener("dragover", (ev) => { ev.preventDefault(); drop.classList.add("over"); });
+      drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+      drop.addEventListener("drop", async (ev) => {
+        ev.preventDefault(); drop.classList.remove("over");
+        const names = [...(ev.dataTransfer?.files || [])].map((f) => f.name);
+        const out = await call("files.dropped", { names }).catch(() => ({}));
+        if (out.files?.[0]?.path) analyze(out.files[0].path);
       });
-      box.querySelectorAll("[data-del]").forEach((el) => el.onclick = async (ev) => {
-        ev.stopPropagation();
-        const ok = await call("ui.confirm", { title: "Delete analysis?", message: "Its saved result files go too.", confirm: "Delete", danger: true });
-        if (!ok?.confirmed) return;
-        await rpc("delete", { run_id: el.dataset.del });
-        if (current === el.dataset.del) { current = ""; $("view").innerHTML = ""; }
-        loadRuns();
-      });
     }
 
-    async function openRun(id) {
-      current = id;
-      loadRuns();
-      const out = await rpc("get", { run_id: id }).catch((e) => ({ ok: false, error: e.message }));
-      if (!out.ok) { $("view").innerHTML = `<div class="dk-error">${esc(out.error)}</div>`; return; }
-      render(out.run);
-    }
-
-    // ---- analyze ----
     async function analyze(target) {
       target = String(target || "").trim().replace(/^"|"$/g, "");
-      if (!target) return $("path").focus();
-      $("apps").hidden = true;
+      if (!target) return $("path")?.focus();
       if (/^https?:\/\//i.test(target)) return investigate(target, "");
-      if (!st.ready) { await loadStatus(); if (!st.ready) { $("view").innerHTML = `<div class="dk-error">${st.busy ? "REA is still getting ready (see above); try again when it finishes." : "Set up REA first (button above)."}</div>`; return; } }
-      $("view").innerHTML = `<div class="dk-card"><span class="spin"></span> Looking inside <span class="mono">${esc(target)}</span>…</div>`;
+      picked = target;
+      $("view").innerHTML = `<div class="dk-card"><span class="spin"></span> Starting on <span class="mono">${esc(target)}</span>…</div>`;
       const out = await rpc("analyze", { target }).catch((e) => ({ ok: false, error: e.message }));
-      if (out.run) { current = out.run.id; loadRuns(); return openRun(out.run.id); }
-      $("view").innerHTML = `<div class="dk-error">${esc(out.error)}</div>`;
+      if (out.run) { current = out.run.id; manual = 0; timeline[current] = []; return refreshRun(); }
+      manual = 2; show();
+      $("view").insertAdjacentHTML("afterbegin", `<div class="dk-error">${esc(out.error)}</div>`);
     }
 
+    // ---- step 3: working ----
+    function viewWorking() {
+      const r = curRun();
+      if (!r) { manual = 0; return show(); }
+      const pct = typeof r.percent === "number" ? r.percent : null;
+      const tl = timeline[r.id] || [];
+      $("view").innerHTML = `<div class="dk-card dk-stack">
+          <div class="row between"><h3><span class="spin"></span> Looking inside ${esc(baseName(r.target))}</h3>
+            <button class="dk-btn" id="stopRun">Cancel</button></div>
+          <div class="row" style="align-items:baseline;gap:12px"><span class="big" id="runPct">${pct ?? "…"}${pct !== null ? "%" : ""}</span>
+            <span class="dk-muted">Time so far: <b id="elapsed">0:00</b></span></div>
+          <div class="bar ${pct === null ? "indet" : ""}" id="runBarWrap" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="runBar" style="width:${pct ?? 0}%"></i></div>
+          <div><b>Now:</b> <span id="runStep">${esc(r.step || "Starting…")}</span></div>
+          <ul class="checks" id="tl">${tlHtml(tl)}</ul>
+          <div class="mono dk-muted techonly">${esc(r.target)}</div>
+        </div>
+        <div class="hint">Small files finish in seconds; big apps can take several minutes. It keeps going if you leave this tab, and you'll get a notification when it's done.</div>`;
+      $("stopRun").onclick = () => rpc("cancel_job", { job_id: r.id });
+      const t0 = (r.created || Date.now() / 1000) * 1000;
+      const paint = () => { const s = Math.max(0, Math.round((Date.now() - t0) / 1000)); if ($("elapsed")) $("elapsed").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+      paint(); tick = setInterval(paint, 1000);
+    }
+    function tlHtml(tl) {
+      return tl.slice(-8, -1).map((e) => `<li><span class="ok">✓</span> ${esc(e.step)}</li>`).join("");
+    }
+    function onProgress(id, step, percent) {
+      const r = runs.find((x) => x.id === id);
+      if (r) { r.step = step; r.percent = percent; }
+      const tl = (timeline[id] ||= []);
+      if (step && tl[tl.length - 1]?.step !== step) tl.push({ step, t: Date.now() });
+      if (id !== current || stage !== 3) { paintSteps(); return; }
+      $("runStep").textContent = step || "";
+      $("tl").innerHTML = tlHtml(tl);
+      if (typeof percent === "number") {
+        $("runBarWrap").classList.remove("indet");
+        $("runBar").style.width = percent + "%";
+        $("runPct").textContent = percent + "%";
+      }
+      paintSteps();
+    }
+
+    // ---- step 4: results ----
+    let detail = null;
+    async function refreshRun() {
+      await loadRuns();
+      const r = curRun();
+      detail = null;
+      if (r && r.status !== "running") {
+        const out = await rpc("get", { run_id: r.id }).catch((e) => ({ ok: false, error: e.message }));
+        detail = out.run || { ...r, ok: false, error: out.error };
+      }
+      show();
+    }
+    function confLevel(c) {
+      const v = c.confidence;
+      if (typeof v === "number") return [v > 0.75 ? "high" : v > 0.4 ? "medium" : "low", Math.round(v * 100)];
+      const s = String(v || "").toLowerCase();
+      if (/high|strong|certain|confirm/.test(s)) return ["high", 90];
+      if (/med|likely|probable/.test(s)) return ["medium", 60];
+      if (s) return ["low", 30];
+      return ["medium", 50];
+    }
+    function viewResult() {
+      const r = detail || curRun();
+      if (!r) { manual = 0; return show(); }
+      const d = r.digest || {};
+      const s = d.subject || {};
+      const cands = d.candidates || [];
+      const top = cands[0];
+      let verdict;
+      if (!r.ok && r.status !== "partial") {
+        verdict = `<div class="verdict"><span class="ic">⚠️</span><div><h3>${r.status === "cancelled" ? "You cancelled this one" : "REA couldn't finish this one"}</h3>
+          <div class="dk-error">${esc(r.error)}</div>${r.remediation ? `<div class="dk-muted">Try: ${esc(r.remediation)}</div>` : ""}</div></div>
+          <div class="row"><button class="dk-btn dk-btn--primary" id="again">Try again</button><button class="dk-btn" id="other">Pick something else</button></div>`;
+      } else {
+        const what = top ? human(top.family || top.kind) : s.format ? `${String(s.format).toUpperCase()} file` : "Analysis done";
+        verdict = `<div class="verdict"><span class="ic">${r.status === "partial" ? "⏱️" : "✅"}</span><div>
+          <div class="dk-muted">${esc(baseName(r.target))} looks like</div><h2>${esc(what)}</h2>
+          ${top ? `<div class="dk-muted">${esc(top.rationale || "")}</div>` : ""}
+          ${r.status === "partial" ? `<div class="dk-muted">${esc(r.note || "Ran out of time: this is everything found so far.")}</div>` : ""}</div></div>`;
+      }
+      const counts = Object.entries(d.counts || {}).filter(([, v]) => typeof v === "number");
+      const max = Math.max(1, ...counts.map(([, v]) => v));
+      const chart = counts.length ? `<div class="dk-card dk-stack"><h3>What's inside</h3>
+          <div class="chart">${counts.map(([k, v]) => `<span>${esc(human(k))}</span><div class="bar"><i style="width:${Math.max(2, (v / max) * 100)}%"></i></div><b>${esc(v.toLocaleString())}</b>`).join("")}</div>
+          <div class="hint">Each bar counts one kind of thing REA found inside, like files, functions or libraries.</div></div>` : "";
+      const candCards = cands.length > 1 || (top && (top.basis_path_preview || []).length) ? `<div class="dk-stack"><h3>How sure is REA?</h3><div class="cards">${cands.map((c) => {
+          const [lvl, pct] = confLevel(c);
+          return `<div class="dk-card dk-stack"><b>${esc(human(c.family || c.kind || "Candidate"))}</b>
+            <div class="meter ${lvl}"><div class="bar"><i style="width:${pct}%"></i></div><span>${esc(c.confidence || lvl)}</span></div>
+            <div class="dk-muted">${esc(c.rationale || "")}</div>
+            <div class="techonly">${(c.basis_path_preview || []).map((p) => `<div class="mono">${esc(p)}</div>`).join("")}</div></div>`;
+        }).join("")}</div><div class="hint">Green = very likely, amber = probably, red = a guess. REA shows why under each one.</div></div>` : "";
+      const probes = (d.next_probes || []).filter((g) => g.example?.path && g.operation !== "open_binary");
+      const next = probes.length ? `<div class="dk-card"><h3>Look deeper: one click each</h3>
+          ${probes.map((g) => { const [t, why] = opInfo(g.operation); return `<div class="next"><div class="t"><b>${esc(t)}</b>
+            <div class="dk-muted">${esc(why || g.example.rationale || "")}</div><div class="mono dk-muted techonly">${esc(g.operation)} · ${esc(g.example.path)}</div></div>
+            <button class="dk-btn" data-op="${esc(g.operation)}" data-path="${esc(g.example.path)}">Run →</button></div>`; }).join("")}
+          <div class="hint">Not sure? Start at the top: REA lists the most useful step first.</div></div>` : "";
+      const native = s.format === "pe" && !st.ghidra ? `<div class="dk-card row between"><div><b>Want to read its code?</b>
+          <div class="dk-muted">Add the code decompiler once (about 650 MB) in step 1.</div></div><button class="dk-btn" id="toSetup">Go to step 1</button></div>` : "";
+      const code = typeof r.details?.normalized_result === "string" ? r.details.normalized_result.trim() : "";
+      const sha = s.digest?.sha256 || "";
+      const lims = [...(d.limitations || []), ...(d.unknowns || [])];
+      const qs = ["How is this app built?", "What engine or framework is this?", "How does it talk to the internet?", "Where are its settings stored?"];
+      const recNext = r.ok || r.status === "partial" ? `<div class="dk-card row between"><div><b>${recFor(r.id) ? "Your recreation is underway" : "Want your own version of it?"}</b>
+          <div class="dk-muted">Step 5: an agent (or a whole team) rebuilds it as your own code in Documents\\REA Recreations.</div></div>
+          <button class="dk-btn dk-btn--primary" id="toRecreate">${recFor(r.id) ? "See progress →" : "Next: recreate it →"}</button></div>` : "";
+      $("view").innerHTML = `<div class="dk-card dk-stack">${verdict}</div>
+        ${recNext}${chart}${candCards}${next}${native}
+        ${code ? `<div class="dk-card"><h3>Readable code</h3><pre>${esc(code)}</pre></div>` : ""}
+        <div class="dk-card dk-stack"><h3>Ask an agent about it</h3>
+          <div class="dk-muted">An agent opens a new chat and digs in with all of REA's tools, then explains what it found.</div>
+          <div class="qchips">${qs.map((q) => `<button class="qchip" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+          <div class="row"><input class="dk-input grow" id="q" placeholder="Or type your own question" aria-label="Question for the agent">
+            <button class="dk-btn dk-btn--primary" id="ask">Ask</button></div></div>
+        ${lims.length ? `<details class="dk-card"><summary>What REA couldn't tell (${lims.length})</summary><ul>${lims.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></details>` : ""}
+        <div class="dk-card dk-stack techonly"><h3>Technical details</h3>
+          <div class="chips">${[s.format && `<span class="dk-badge dk-badge--info">format ${esc(s.format)}</span>`,
+            s.architecture && `<span class="dk-badge dk-badge--info">arch ${esc(s.architecture)}</span>`,
+            sha && `<span class="dk-badge" title="${esc(sha)}">sha256 ${esc(sha.slice(0, 12))}…</span>`,
+            `<span class="dk-badge">${esc(r.seconds)} s</span>`].filter(Boolean).join("")}</div>
+          <div class="mono dk-muted">${esc(r.target)}</div>
+          <div class="mono dk-muted">${esc(r.result_path)} · ${esc(Math.round((r.result_bytes || 0) / 1024))} KB</div>
+          <details><summary>Raw result</summary><pre>${r.details ? esc(JSON.stringify(r.details, null, 2)) : "Too big to show here. Ask an agent: it reads it with REA's view tools."}</pre></details></div>
+        <div><button class="dk-btn" id="other2">← Pick something else</button></div>`;
+      const ask = (q) => investigate(r.target, q, r.id);
+      $("ask").onclick = () => ask($("q").value);
+      $("q").onkeydown = (ev) => { if (ev.key === "Enter") ask($("q").value); };
+      $("view").querySelectorAll("[data-q]").forEach((b) => b.onclick = () => ask(b.dataset.q));
+      $("view").querySelectorAll("[data-op]").forEach((b) => b.onclick = () => runProbe(b.dataset.op, b.dataset.path));
+      const other = () => { current = ""; manual = 0; loadRuns().then(show); };
+      $("other2").onclick = other;
+      if ($("other")) $("other").onclick = other;
+      if ($("again")) $("again").onclick = () => analyze(r.target);
+      if ($("toSetup")) $("toSetup").onclick = () => { manual = 1; show(); };
+      if ($("toRecreate")) $("toRecreate").onclick = () => { manual = 5; show(); };
+    }
+
+    // ---- step 5: recreate ----
+    let recs = [];
+    let recMode = pref("mode", "solo");
+    let openRec = "";          // recreation shown on the Recreations tab (one at a time)
+    let recDetail = null;
+    const recFor = (runId) => runId ? recs.find((x) => x.run_id === runId) : null;
+    function viewRecreate() {
+      const r = detail || curRun();
+      if (!r) { manual = 0; return show(); }
+      const rec = recFor(r.id);
+      if (rec) {
+        $("view").innerHTML = `<div class="hint">Your recreation is building. Its full page is on the <b>Recreations</b> tab, with every milestone as it happens.</div><div id="recInline" class="dk-stack"></div>`;
+        return renderRecDetail(rec.id, $("recInline"));
+      }
+      const name = baseName(r.target);
+      const ideaIcon = { "A working copy of its main screen": "🖥", "The same app as a web app": "🌐", "Its core feature only, done simply": "🎯", "A UEFN/Fortnite version of it": "🎮" };
+      const ideas = Object.keys(ideaIcon);
+      const picked = new Set();
+      $("view").innerHTML = `<div class="dk-card dk-stack">
+          <h3>Recreate ${esc(name)}</h3>
+          <div class="dk-muted">An agent reads what REA found, digs deeper where it needs to, and builds <b>your own original version</b> in a new folder. It never copies the original's files or code.</div>
+          <b id="goalLbl">1. What should it build? <span class="dk-muted" style="font-weight:400">Pick any, or all</span></b>
+          <div class="choices" role="group" aria-labelledby="goalLbl">
+            <button class="dk-choice all" role="checkbox" data-all><span class="dk-choice__icon">✦</span><span class="dk-choice__text"><b>All of them</b><span class="dk-choice__hint">Every option below in one recreation</span></span></button>
+            ${ideas.map((q) => `<button class="dk-choice" role="checkbox" data-goal="${esc(q)}"><span class="dk-choice__icon">${ideaIcon[q]}</span><span class="dk-choice__text"><b>${esc(q)}</b></span></button>`).join("")}
+          </div>
+          <input class="dk-input" id="goal" placeholder="Anything else? e.g. keep its dark theme" aria-label="Anything else to build">
+          <b id="modeLbl">2. Who builds it?</b>
+          <div class="choices" role="radiogroup" aria-labelledby="modeLbl">
+            <button class="dk-choice" data-mode="solo" role="radio"><span class="dk-choice__icon">👤</span><span class="dk-choice__text"><b>One agent</b><span class="dk-choice__hint">Simpler, cheaper. Good for small apps.</span></span></button>
+            <button class="dk-choice" data-mode="team" role="radio"><span class="dk-choice__icon">👥</span><span class="dk-choice__text"><b>A team</b><span class="dk-choice__hint">A lead plans it; specialists build parts at the same time.</span></span></button>
+          </div>
+          <b>3. Where it goes</b>
+          <div class="mono dk-muted">Documents\\REA Recreations\\${esc(name)}</div>
+          <div class="hint">The agent's chat goes in the <b>REA Recreations</b> chat group. The first time, it asks you once if it may write to that folder. It keeps building when you close this tab: every milestone also shows in the top bar's activity list.</div>
+          <div><button class="dk-btn dk-btn--primary" id="startRec">Start recreating →</button></div>
+        </div>`;
+      const paintMode = () => $("view").querySelectorAll("[data-mode]").forEach((b) => b.setAttribute("aria-checked", b.dataset.mode === recMode));
+      $("view").querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => { recMode = b.dataset.mode; prefs.mode = recMode; try { localStorage.setItem("rea.prefs", JSON.stringify(prefs)); } catch {} paintMode(); });
+      paintMode();
+      const paintGoals = () => {
+        $("view").querySelectorAll("[data-goal]").forEach((b) => b.setAttribute("aria-checked", picked.has(b.dataset.goal)));
+        $("view").querySelector("[data-all]").setAttribute("aria-checked", picked.size === ideas.length);
+      };
+      $("view").querySelectorAll("[data-goal]").forEach((b) => b.onclick = () => { picked.delete(b.dataset.goal) || picked.add(b.dataset.goal); paintGoals(); });
+      $("view").querySelector("[data-all]").onclick = () => { if (picked.size === ideas.length) picked.clear(); else ideas.forEach((q) => picked.add(q)); paintGoals(); };
+      paintGoals();
+      $("startRec").onclick = async () => {
+        $("startRec").disabled = true;
+        $("startRec").innerHTML = '<span class="spin"></span> Making the folder and starting the agent…';
+        const goal = [...ideas.filter((q) => picked.has(q)), $("goal").value.trim()].filter(Boolean).join("; ");
+        const out = await rpc("recreate", { run_id: r.id, goal, mode: recMode }).catch((e) => ({ ok: false, error: e.message }));
+        await loadRecs();
+        if (!out.ok) { $("view").insertAdjacentHTML("afterbegin", `<div class="dk-error">${esc(out.error)}</div>`); $("startRec").disabled = false; $("startRec").textContent = "Try again"; return; }
+        show();
+      };
+    }
+
+    // ---- Recreations tab: a gallery, one open at a time ----
+    const ago = (t) => { if (!t) return "never"; const s = Math.max(0, Date.now() / 1000 - t); return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : new Date(t * 1000).toLocaleDateString(); };
+    const kb = (b) => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+    const BADGE = { building: "accent", done: "success", blocked: "danger", stopped: "warn" };
+    const statusPill = (x) => `<span class="dk-badge dk-badge--${BADGE[x.status] || "info"}">${x.status === "building" ? '<span class="spin"></span>' : x.status === "done" ? "✓" : x.status === "blocked" ? "⚠" : "■"} ${esc(human(x.status))}</span>`;
+    async function loadRecs() {
+      const out = await rpc("recreations").catch(() => ({ recreations: [] }));
+      recs = out.recreations || [];
+      $("recCount").textContent = recs.length;
+      $("recCount").hidden = !recs.length;
+      return out;
+    }
+    let recTick = null;
+    async function showRecs() {
+      clearInterval(recTick); recTick = null;
+      const out = await loadRecs();
+      if (openRec) return renderRecDetail(openRec, $("recView"), true);
+      $("recView").innerHTML = `<div class="row between"><div><h3>All your recreations</h3><div class="dk-muted mono">${esc(out.root || "")}</div></div>
+          <button class="dk-btn" id="openRoot">📁 Open folder</button></div>
+        ${recs.length ? `<div class="gallery">${recs.map((x) => `<button class="rec" data-rec="${esc(x.id)}">
+            <b>${esc(x.name)}</b>${statusPill(x)}
+            ${x.status === "building" ? `<div class="bar ${typeof x.percent === "number" ? "" : "indet"}"><i style="width:${x.percent ?? 0}%"></i></div>` : ""}
+            <div class="dk-muted" style="font-size:.85em">${esc(x.goal)}</div>
+            <div class="dk-muted" style="font-size:.8em">${x.mode === "team" ? "👥 Team" : "👤 One agent"} · ${esc(x.file_count)} files · changed ${esc(ago(x.last_change || x.updated))}</div></button>`).join("")}</div>`
+          : `<div class="dk-empty"><div class="dk-empty__title">No recreations yet</div>Analyze something on the <b>Analyze</b> tab, then press <b>Recreate it</b> on its results.</div>`}
+        <div class="hint">Many recreations can build at the same time. Click one to open its page.</div>`;
+      $("openRoot").onclick = () => rpc("recreation_open", { what: "root" });
+      $("recView").querySelectorAll("[data-rec]").forEach((b) => b.onclick = () => { openRec = b.dataset.rec; showRecs(); });
+      if (recs.some((x) => x.status === "building")) recTick = setInterval(() => { if (document.body.classList.contains("recs") && !openRec) showRecs(); }, 10000);
+    }
+    async function renderRecDetail(id, box, withBack = false) {
+      const out = await rpc("recreation_get", { recreation_id: id }).catch((e) => ({ ok: false, error: e.message }));
+      if (!out.ok) { box.innerHTML = `<div class="dk-error">${esc(out.error)}</div>`; return; }
+      const x = recDetail = out.recreation;
+      const notes = [...(x.notes || [])].reverse();
+      box.innerHTML = `${withBack ? '<div><button class="dk-btn" id="recBack">← All recreations</button></div>' : ""}
+        <div class="dk-card dk-stack">
+          <div class="row between"><div><h3>${esc(x.name)}</h3><div class="dk-muted">${esc(x.goal)}</div></div>${statusPill(x)}</div>
+          ${x.status === "building" ? `<div class="bar ${typeof x.percent === "number" ? "" : "indet"}" role="progressbar"><i style="width:${x.percent ?? 0}%"></i></div>` : ""}
+          <div class="stats">
+            <div class="stat"><b>${typeof x.percent === "number" ? x.percent + "%" : "…"}</b><span>Progress</span></div>
+            <div class="stat"><b>${esc(x.file_count)}</b><span>Files written</span></div>
+            <div class="stat"><b>${esc(kb(x.bytes || 0))}</b><span>Size</span></div>
+            <div class="stat"><b>${esc(ago(x.last_change))}</b><span>Last change</span></div>
+            <div class="stat"><b>${x.mode === "team" ? "👥" : "👤"}</b><span>${x.mode === "team" ? "Team" : "One agent"}</span></div>
+          </div>
+          <div class="row">
+            <button class="dk-btn dk-btn--primary" id="recChat" ${x.conv_id ? "" : "disabled"}>💬 Open the agent's chat</button>
+            <button class="dk-btn" id="recFolder" ${x.folder_exists ? "" : "disabled"}>📁 Open folder</button>
+            ${x.status === "building" ? '<button class="dk-btn" id="recStop">Mark stopped</button>' : '<button class="dk-btn" id="recResume">Mark building</button>'}
+            <button class="dk-btn dk-btn--danger" id="recDel">Delete</button>
+          </div>
+          <div class="mono dk-muted">${esc(x.folder)}</div>
+        </div>
+        <div class="dk-card dk-stack"><h3>What's happening</h3>
+          ${notes.length ? `<ul class="notes">${notes.map((n) => `<li><time>${esc(new Date(n.t * 1000).toLocaleTimeString([], { timeStyle: "short" }))}</time>${esc(n.text)}</li>`).join("")}</ul>` : '<div class="dk-muted">No milestones yet.</div>'}
+          <div class="hint">The agent posts a line here at each milestone. Newest on top. For the full story, open its chat.</div></div>
+        <details class="dk-card" ${x.file_count && x.file_count <= 40 ? "open" : ""}><summary>Files (${esc(x.file_count)})</summary>
+          ${(x.files || []).map((f) => `<div class="row between"><span class="mono">${esc(f.path)}</span><span class="dk-muted" style="font-size:.8em">${esc(kb(f.bytes))} · ${esc(ago(f.modified))}</span></div>`).join("") || '<div class="dk-muted">Nothing written yet.</div>'}
+        </details>`;
+      const reload = () => renderRecDetail(id, box, withBack);
+      if ($("recBack")) $("recBack").onclick = () => { openRec = ""; showRecs(); };
+      $("recChat").onclick = () => rpc("recreation_open", { recreation_id: id, what: "chat" });
+      $("recFolder").onclick = () => rpc("recreation_open", { recreation_id: id, what: "folder" });
+      if ($("recStop")) $("recStop").onclick = async () => { await rpc("recreation_update", { recreation_id: id, status: "stopped", note: "Marked stopped in the panel." }); await loadRecs(); reload(); };
+      if ($("recResume")) $("recResume").onclick = async () => { await rpc("recreation_update", { recreation_id: id, status: "building", note: "Marked building again in the panel." }); await loadRecs(); reload(); };
+      $("recDel").onclick = async () => {
+        const ok = await call("ui.confirm", { title: "Remove this recreation?", message: "It leaves the list. Next you choose whether its folder goes too.", confirm: "Remove", danger: true }).catch(() => null);
+        if (!ok?.confirmed) return;
+        const files = await call("ui.confirm", { title: "Delete its files too?", message: `Deletes ${x.folder} and everything the agent wrote. Cancel keeps the folder.`, confirm: "Delete files", danger: true }).catch(() => null);
+        await rpc("recreation_delete", { recreation_id: id, delete_files: !!files?.confirmed });
+        openRec = ""; await loadRecs();
+        document.body.classList.contains("recs") ? showRecs() : show();
+      };
+      clearInterval(recTick);
+      recTick = x.status === "building" ? setInterval(() => { if (box.isConnected && box.offsetParent) reload(); else clearInterval(recTick); }, 8000) : null;
+    }
+    function setTab(recTab) {
+      document.body.classList.toggle("recs", recTab);
+      $("tabRecs").classList.toggle("on", recTab); $("tabAnalyze").classList.toggle("on", !recTab);
+      $("tabRecs").setAttribute("aria-selected", recTab); $("tabAnalyze").setAttribute("aria-selected", !recTab);
+      // Both views reuse ids (recChat, recDel…): empty the hidden one so $() finds the visible one.
+      if (recTab) { $("view").innerHTML = ""; showRecs(); } else { clearInterval(recTick); recTick = null; $("recView").innerHTML = ""; show(); }
+    }
+    $("tabAnalyze").onclick = () => setTab(false);
+    $("tabRecs").onclick = () => setTab(true);
+
     async function runProbe(op, path) {
-      $("view").insertAdjacentHTML("afterbegin", `<div class="dk-card" id="probing"><span class="spin"></span> ${esc(op)} on <span class="mono">${esc(path)}</span>…</div>`);
+      $("view").insertAdjacentHTML("afterbegin", `<div class="dk-card" id="probing"><span class="spin"></span> Starting: ${esc(opInfo(op)[0])}…</div>`);
       const out = await rpc("probe", { operation: op, path }).catch((e) => ({ ok: false, error: e.message }));
-      if (out.run) return openRun(out.run.id);
+      if (out.run) { current = out.run.id; manual = 0; timeline[current] = []; return refreshRun(); }
       $("probing")?.remove();
+      if (out.needs_ghidra) { manual = 1; show(); }
       $("view").insertAdjacentHTML("afterbegin", `<div class="dk-error">${esc(out.error)}</div>`);
     }
 
     async function investigate(target, question, runId = "") {
       const out = await rpc("investigate", { target, question, run_id: runId }).catch((e) => ({ ok: false, error: e.message }));
       if (!out.ok) return call("ui.alert", { title: "Couldn't start", message: out.error });
-      call("ui.alert", { title: "Investigation started", message: "An agent is reverse engineering it in a new chat with all REA tools." });
+      call("ui.alert", { title: "Agent started", message: "A new chat opened where an agent is digging in. You'll find it in your chat list." });
     }
 
-    // ---- render ----
-    function render(r) {
-      if (r.status === "running") {
-        $("view").innerHTML = `<div class="dk-card dk-stack">
-          <div class="row" style="justify-content:space-between">
-            <div class="dk-card__title"><span class="spin"></span> ${esc(r.name)}</div>
-            <button class="dk-btn" id="stopRun">Cancel</button></div>
-          <div class="mono dk-muted">${esc(r.target)}</div>
-          <div class="bar"><i id="runBar" style="width:${typeof r.percent === "number" ? r.percent : 5}%"></i></div>
-          <div id="runStep">${esc(r.step || "Starting…")}</div>
-          <div class="dk-muted">Big apps can take a few minutes. It keeps going if you leave this tab, and it shows in the top bar's activity list.</div></div>`;
-        $("stopRun").onclick = () => rpc("cancel_job", { job_id: r.id });
-        return;
-      }
-      const d = r.digest || {};
-      const s = d.subject || {};
-      const sha = s.digest?.sha256 || "";
-      const chips = [
-        s.format && `<span class="chip">format <b>${esc(s.format)}</b></span>`,
-        s.architecture && `<span class="chip">arch <b>${esc(s.architecture)}</b></span>`,
-        sha && `<span class="chip" title="${esc(sha)}">sha256 <b>${esc(sha.slice(0, 12))}…</b></span>`,
-        ...Object.entries(d.counts || {}).map(([k, v]) => `<span class="chip">${esc(k.replace(/_/g, " "))} <b>${esc(v)}</b></span>`),
-        `<span class="chip">${esc(r.seconds)} s</span>`,
-      ].filter(Boolean).join("");
-      const cands = (d.candidates || []).map((c) => `<div class="dk-card"><div class="dk-card__title">${esc(c.family || c.kind || "candidate")}</div>
-        <div class="dk-muted">${esc(c.confidence || "")}</div><div>${esc(c.rationale || "")}</div>
-        ${(c.basis_path_preview || []).map((p) => `<div class="mono">${esc(p)}</div>`).join("")}</div>`).join("");
-      const probes = (d.next_probes || []).map((g) => {
-        const ex = g.example || {};
-        const can = ex.path && g.operation !== "open_binary";
-        return `<div class="probe"><div class="t"><b>${esc(g.operation.replace(/_/g, " "))}</b>${g.count > 1 ? ` <span class="dk-muted">×${esc(g.count)}</span>` : ""}
-          <div class="dk-muted">${esc(ex.rationale || "")}</div>${ex.path ? `<div class="mono">${esc(ex.path)}</div>` : ""}</div>
-          ${can ? `<button class="dk-btn" data-op="${esc(g.operation)}" data-path="${esc(ex.path)}">Run</button>` : ""}</div>`;
+    // ---- history ----
+    const baseName = (p) => String(p || "").split(/[\\/]/).filter(Boolean).pop() || p;
+    async function loadRuns() {
+      const out = await rpc("runs").catch(() => ({ runs: [] }));
+      const live = Object.fromEntries(runs.map((r) => [r.id, r]));
+      runs = (out.runs || []).map((r) => r.status === "running" && live[r.id]?.step ? { ...r, step: live[r.id].step, percent: live[r.id].percent } : r);
+      const box = $("runs");
+      if (!runs.length) { box.innerHTML = '<div class="dk-empty"><div class="dk-empty__title">Nothing yet</div>Your analyses show up here.</div>'; return; }
+      box.innerHTML = runs.map((r) => {
+        const ic = r.status === "running" ? '<span class="spin"></span>' : r.status === "partial" ? '<span class="s-part">◐</span>' : r.ok ? '<span class="s-ok">●</span>' : '<span class="s-err">✕</span>';
+        const when = r.created ? new Date(r.created * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "";
+        return `<div class="run ${r.id === current ? "on" : ""}" role="button" tabindex="0" data-id="${esc(r.id)}">
+          <span>${ic}</span><span class="t" title="${esc(r.target)}"><b>${esc(r.name)}</b><span>${esc(when)}</span></span>
+          <span class="x" role="button" tabindex="0" aria-label="Delete" data-del="${esc(r.id)}">×</span></div>`;
       }).join("");
-      const lims = [...(d.limitations || []), ...(d.unknowns || [])].map((l) => `<li>${esc(l)}</li>`).join("");
-      const code = typeof r.details?.normalized_result === "string" ? r.details.normalized_result.trim() : "";
-      const native = s.format === "pe" && !st.ghidra ? `<div class="dk-card dk-stack">
-          <div class="dk-card__title">Want its pseudocode?</div>
-          <div class="dk-muted">Add the native decompiler once: Ghidra ${esc(st.ghidra_version)} with its own Java ${esc(st.jdk_version)} (about 650 MB, SHA-checked, cancellable, nothing system-wide). Then every EXE and DLL gets Decompile and a native overview.</div>
-          <div><button class="dk-btn dk-btn--primary" id="addGhidra">Add native decompiler</button></div></div>` : "";
-      $("view").innerHTML = `
-        <div class="dk-card dk-stack">
-          <div class="dk-card__title">${esc(r.name)}</div>
-          <div class="mono dk-muted">${esc(r.target)}</div>
-          ${r.ok ? `<div class="chips">${chips}</div>${r.note ? `<div class="dk-muted">${esc(r.note)}</div>` : ""}` : `<div class="dk-error">${esc(r.error)}${r.remediation ? `<div class="dk-muted">${esc(r.remediation)}</div>` : ""}</div>`}
-          <div class="row" style="justify-content:flex-start">
-            <input class="dk-input grow" id="q" placeholder="Ask about it: how does search work? what engine is this?" aria-label="Question for the agent">
-            <button class="dk-btn dk-btn--primary" id="ask">Investigate with agent</button>
-          </div>
-        </div>
-        ${code ? `<div class="dk-card"><div class="dk-card__title">Pseudocode</div><pre>${esc(code)}</pre></div>` : ""}
-        ${cands ? `<div class="dk-stack"><div class="dk-card__title">What it is</div><div class="cards">${cands}</div></div>` : ""}
-        ${probes ? `<div class="dk-card"><div class="dk-card__title">Look deeper (one click)</div>${probes}</div>` : ""}
-        ${native}
-        ${lims ? `<details class="dk-card"><summary>Limits and unknowns</summary><ul>${lims}</ul></details>` : ""}
-        <details class="dk-card"><summary>Full result</summary>
-          <div class="dk-muted mono">${esc(r.result_path)} · ${esc(Math.round((r.result_bytes || 0) / 1024))} KB</div>
-          <pre>${r.details ? esc(JSON.stringify(r.details, null, 2)) : "Too big to show here: Investigate with agent reads it with REA's view tools."}</pre></details>`;
-      $("ask").onclick = () => investigate(r.target, $("q").value, r.id);
-      if ($("addGhidra")) $("addGhidra").onclick = async () => { await rpc("setup", { ghidra: true }); loadStatus(); $("addGhidra").closest(".dk-card").remove(); };
-      $("q").onkeydown = (ev) => { if (ev.key === "Enter") $("ask").click(); };
-      $("view").querySelectorAll("[data-op]").forEach((b) => b.onclick = () => runProbe(b.dataset.op, b.dataset.path));
+      box.querySelectorAll(".run").forEach((el) => {
+        const open = () => { current = el.dataset.id; manual = 0; refreshRun(); };
+        el.onclick = (ev) => { if (!ev.target.dataset.del) open(); };
+        el.onkeydown = (ev) => { if (ev.key === "Enter" && !ev.target.dataset.del) open(); };
+      });
+      box.querySelectorAll("[data-del]").forEach((el) => el.onclick = async (ev) => {
+        ev.stopPropagation();
+        const ok = await call("ui.confirm", { title: "Delete this analysis?", message: "Its saved result files go too.", confirm: "Delete", danger: true }).catch(() => null);
+        if (!ok?.confirmed) return;
+        await rpc("delete", { run_id: el.dataset.del });
+        if (current === el.dataset.del) current = "";
+        await loadRuns(); show();
+      });
     }
 
-    // ---- pickers ----
-    $("go").onclick = () => analyze($("path").value);
-    $("path").onkeydown = (ev) => { if (ev.key === "Enter") analyze($("path").value); };
-    $("pickFolder").onclick = async () => { const o = await call("files.pickFolder").catch(() => ({})); if (o.folder) { $("path").value = o.folder; analyze(o.folder); } };
-    $("pickFile").onclick = async () => { const o = await call("files.pick", { accept: "any" }).catch(() => ({})); const f = o.files?.[0]; if (f) { $("path").value = f.path; analyze(f.path); } };
-    $("pickApp").onclick = async () => {
-      const box = $("apps");
-      if (!box.hidden) { box.hidden = true; return; }
-      box.hidden = false;
-      box.innerHTML = '<div class="dk-muted"><span class="spin"></span> Finding running apps…</div>';
-      const out = await rpc("apps").catch((e) => ({ ok: false, error: e.message }));
-      if (!out.ok) { box.innerHTML = `<div class="dk-error">${esc(out.error)}</div>`; return; }
-      box.innerHTML = out.apps.map((a, i) => `<button class="dk-btn" data-i="${i}" title="${esc(a.exe)}"><b>${esc(a.name)}</b><div class="dk-muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.title)}</div></button>`).join("") || '<div class="dk-muted">No windows found.</div>';
-      box.querySelectorAll("[data-i]").forEach((b) => b.onclick = () => { const a = out.apps[+b.dataset.i]; $("path").value = a.folder; analyze(a.folder); });
-    };
-    const drop = $("drop");
-    drop.addEventListener("dragover", (ev) => { ev.preventDefault(); drop.classList.add("over"); });
-    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-    drop.addEventListener("drop", async (ev) => {
-      ev.preventDefault();
-      drop.classList.remove("over");
-      const names = [...(ev.dataTransfer?.files || [])].map((f) => f.name);
-      const out = await call("files.dropped", { names }).catch(() => ({}));
-      const f = out.files?.[0];
-      if (f?.path) { $("path").value = f.path; analyze(f.path); }
-    });
-
-    call("plugin.subscribe", { types: ["rea_status", "rea_runs_changed", "rea_run_progress"] }).catch(() => {});
+    call("plugin.subscribe", { types: ["rea_status", "rea_runs_changed", "rea_run_progress", "rea_recreations_changed"] }).catch(() => {});
     window.addEventListener("message", (ev) => {
       const e = ev.data?.channel === CHANNEL ? ev.data.event : null;
       if (!e) return;
       if (e.type === "rea_status") loadStatus();
-      if (e.type === "rea_run_progress" && e.id === current && $("runStep")) {
-        $("runStep").textContent = e.step || "";
-        if (typeof e.percent === "number") $("runBar").style.width = e.percent + "%";
+      if (e.type === "rea_run_progress") onProgress(e.id, e.step, e.percent);
+      if (e.type === "rea_recreations_changed" || e.type === "plugin_scope_changed") {
+        loadRecs().then(() => {
+          if (document.body.classList.contains("recs")) showRecs();
+          else if (stage === 5 || stage === 4) show();
+          else paintSteps();
+        });
       }
       if (e.type === "rea_runs_changed" || e.type === "plugin_scope_changed") {
-        if (current && e.id === current) openRun(current); else loadRuns();
+        if (current && e.id === current) refreshRun(); else loadRuns().then(paintSteps);
       }
     });
-    loadStatus();
-    loadRuns();
+    Promise.all([loadRuns(), loadRecs()]).then(loadStatus);
   </script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 {
   "id": "rea",
   "kind": "plugin",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "label": "Reverse Engineer",
   "description": "Point at any app, folder, EXE, DLL, archive or game file and see how it's built in one click, powered by REA (Reverse Engineer Anything). Agents get all 229 REA tools too.",
   "min_app_version": "1.0.0",
@@ -16,12 +16,18 @@
         "rea_status",
         "rea_runs",
         "rea_get",
-        "rea_apps"
+        "rea_apps",
+        "rea_recreations",
+        "rea_recreation_get"
       ],
       "destructive_tools": [
         "rea_delete",
         "rea_setup",
-        "rea_investigate"
+        "rea_cancel_job",
+        "rea_investigate",
+        "rea_recreate",
+        "rea_recreation_delete",
+        "rea_recreation_open"
       ]
     },
     "ui.panels": [
@@ -55,7 +61,7 @@
         {
           "target": "header.button.main",
           "title": "Point at anything",
-          "body": "Open **Reverse Engineer**, then drop an app's folder, an EXE, DLL or game file on it, or pick a running app. One click shows what it's built with and where to look next.",
+          "body": "Open **Reverse Engineer**: it walks you through 4 steps (**Get ready → Pick something → Look inside → Results**). Pick a running app, a folder or a file and watch every step live. Turn on **Explain as I go** for tips.",
           "advance": "require_click"
         }
       ]
@@ -92,6 +98,26 @@
               "label": "Summary",
               "type": "string"
             }
+          ]
+        },
+        {
+          "id": "rea.recreate",
+          "label": "Recreate it",
+          "group": "Reverse Engineer",
+          "description": "Start an agent (or a team) rebuilding an analysed app as original code in Documents/REA Recreations.",
+          "config_fields": [
+            {"id": "run_id", "label": "Analysis id", "type": "string"},
+            {"id": "goal", "label": "What to build", "type": "string"},
+            {"id": "mode", "label": "solo or team", "type": "string"}
+          ],
+          "inputs": [
+            {"id": "run_id", "label": "Analysis id", "type": "string"},
+            {"id": "target", "label": "Or a target path", "type": "string"},
+            {"id": "goal", "label": "What to build", "type": "string"}
+          ],
+          "outputs": [
+            {"id": "folder", "label": "Recreation folder", "type": "string"},
+            {"id": "conv_id", "label": "Builder chat", "type": "string"}
           ]
         }
       ],
@@ -148,6 +174,25 @@
                 "target": "f",
                 "kind": "main"
               }
+            ]
+          }
+        },
+        {
+          "id": "rea-recreate",
+          "label": "Recreate an app",
+          "category": "Reverse Engineer",
+          "description": "Chat start → Agent → Recreate it → Finish.",
+          "graph": {
+            "nodes": [
+              {"id": "s", "type": "start.chat", "x": 0, "y": 0, "config": {}},
+              {"id": "a", "type": "pipeline.agent", "x": 200, "y": 0, "config": {}},
+              {"id": "n", "type": "rea.recreate", "x": 400, "y": 0, "config": {}},
+              {"id": "f", "type": "pipeline.finish", "x": 600, "y": 0, "config": {}}
+            ],
+            "edges": [
+              {"source": "s", "target": "a", "kind": "main"},
+              {"source": "a", "target": "n", "kind": "main"},
+              {"source": "n", "target": "f", "kind": "main"}
             ]
           }
         }

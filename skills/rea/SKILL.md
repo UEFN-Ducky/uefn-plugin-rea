@@ -29,6 +29,16 @@ Static JS/.NET/desktop/PE inspection needs nothing extra.
 A run that hits its time limit (big Electron apps can take hours) ends `status="partial"` with a
 summary of everything found so far: report it as partial, not as a failure.
 
+Recreations (rebuild an analysed app as original code):
+- `rea_recreate(run_id, goal, mode="solo"|"team")`: makes `Documents/REA Recreations/<name>/` with
+  `REA-BRIEF.md` (REA's findings) and opens a builder chat in the "REA Recreations" chat group.
+  `mode="team"` has that chat plan and seat a multi-agent team. Many recreations can run at once.
+- `rea_recreation_update(recreation_id, note, percent?, status?)`: **builders call this at every
+  milestone**; the panel's Recreations page shows each note live. End with `status="done"` or `"blocked"`.
+- `rea_recreations()`, `rea_recreation_get(id)` (notes + files), `rea_recreation_open(id, what="folder"|"chat"|"root")`,
+  `rea_recreation_delete(id, delete_files?)`.
+Builders write only inside their recreation folder and never copy the original's binaries, assets or code.
+
 Deep work (xrefs, sessions, websites, captures): the nested `rea__*` tools. Find them with
 `ducky_get_tools("rea")` and call with `ducky_call_tool`.
 
