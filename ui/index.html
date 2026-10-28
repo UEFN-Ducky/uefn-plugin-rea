@@ -152,6 +152,15 @@
     .run .t span { font-size: .82em; color: var(--fg-dim); }
     .run .x { color: var(--muted); padding: 0 4px; border-radius: var(--radius-sm); }
     .run .x:hover { color: var(--red); background: var(--red-dim); }
+    .run .box { flex: none; width: 18px; height: 18px; margin-top: 2px; border-radius: 4px; border: 2px solid var(--border);
+                display: grid; place-items: center; font-size: .75em; color: var(--fg-inverse); }
+    .run.picked { background: var(--tab-active); border-color: var(--accent); }
+    .run.picked .box { background: var(--accent); border-color: var(--accent); }
+    .histbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px; border-radius: var(--radius-sm);
+               background: var(--card); border: 1px solid var(--border); }
+    .histbar .dk-check { margin-right: auto; }
+    .clearall { margin-top: auto; color: var(--fg-dim); }
+    .clearall:hover { color: var(--red); }
     .s-ok { color: var(--green); } .s-err { color: var(--red); } .s-part { color: var(--amber); }
   </style>
 </head>
@@ -179,8 +188,15 @@
       <div id="recView" class="dk-stack"></div>
     </main>
     <aside class="side dk-sidebar" aria-label="History">
-      <div class="dk-sidebar__title">History</div>
+      <div class="row between"><div class="dk-sidebar__title">History</div>
+        <button class="dk-btn dk-btn--ghost" id="histSelect" hidden>Select</button></div>
+      <div class="histbar" id="histBar" hidden>
+        <label class="dk-check"><input type="checkbox" id="histAll"> All</label>
+        <button class="dk-btn dk-btn--danger" id="histDel" disabled>Delete</button>
+        <button class="dk-btn dk-btn--ghost" id="histDone">Done</button>
+      </div>
       <div id="runs"><div class="dk-loading">Loading…</div></div>
+      <button class="dk-btn dk-btn--ghost clearall" id="histClear" hidden>🗑 Clear all history</button>
     </aside>
   </div>
   <script>
@@ -724,12 +740,26 @@
 
     // ---- history ----
     const baseName = (p) => String(p || "").split(/[\\/]/).filter(Boolean).pop() || p;
-    async function loadRuns() {
-      const out = await rpc("runs").catch(() => ({ runs: [] }));
+    async function loadRuns(cached = null) {
+      const out = cached || await rpc("runs", { limit: 500 }).catch(() => ({ runs: [] }));
+      lastRunsOut = out;
       const live = Object.fromEntries(runs.map((r) => [r.id, r]));
       runs = (out.runs || []).map((r) => r.status === "running" && live[r.id]?.step ? { ...r, step: live[r.id].step, percent: live[r.id].percent } : r);
       const box = $("runs");
+      for (const id of [...chosen]) if (!runs.some((r) => r.id === id)) chosen.delete(id);
+      if (!runs.length) selecting = false;
+      paintHistBar();
       if (!runs.length) { box.innerHTML = '<div class="dk-empty"><div class="dk-empty__title">Nothing yet</div>Your analyses show up here.</div>'; return; }
+      if (selecting) {
+        box.innerHTML = runs.map((r) => `<div class="run ${chosen.has(r.id) ? "picked" : ""}" role="checkbox" tabindex="0" aria-checked="${chosen.has(r.id)}" data-pick="${esc(r.id)}">
+            <span class="box">${chosen.has(r.id) ? "✓" : ""}</span><span class="t" title="${esc(r.target)}"><b>${esc(r.name)}</b><span>${esc(r.created ? new Date(r.created * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "")}</span></span></div>`).join("");
+        box.querySelectorAll("[data-pick]").forEach((el) => {
+          const flip = () => { const id = el.dataset.pick; chosen.delete(id) || chosen.add(id); loadRunsRender(); };
+          el.onclick = flip;
+          el.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); flip(); } };
+        });
+        return;
+      }
       box.innerHTML = runs.map((r) => {
         const ic = r.status === "running" ? '<span class="spin"></span>' : r.status === "partial" ? '<span class="s-part">◐</span>' : r.ok ? '<span class="s-ok">●</span>' : '<span class="s-err">✕</span>';
         const when = r.created ? new Date(r.created * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "";
@@ -751,6 +781,43 @@
         await loadRuns(); show();
       });
     }
+
+    // ---- history: select some, or clear all ----
+    let selecting = false;
+    const chosen = new Set();
+    let lastRunsOut = null;
+    function loadRunsRender() { return loadRuns(lastRunsOut); }
+    function paintHistBar() {
+      $("histSelect").hidden = selecting || !runs.length;
+      $("histClear").hidden = selecting || !runs.length;
+      $("histBar").hidden = !selecting;
+      $("histAll").checked = !!runs.length && chosen.size === runs.length;
+      $("histAll").indeterminate = chosen.size > 0 && chosen.size < runs.length;
+      $("histDel").disabled = !chosen.size;
+      $("histDel").textContent = chosen.size ? `Delete ${chosen.size}` : "Delete";
+    }
+    async function deleteRuns(ids, title) {
+      if (!ids.length) return;
+      const live = ids.filter((id) => runs.find((r) => r.id === id)?.status === "running").length;
+      const ok = await call("ui.confirm", { title, danger: true, confirm: "Delete",
+        message: `${ids.length} ${ids.length === 1 ? "analysis" : "analyses"} and their saved result files go. ${live ? `${live} still running will be cancelled. ` : ""}Recreations are kept.` }).catch(() => null);
+      if (!ok?.confirmed) return;
+      const box = $("runs");
+      let n = 0;
+      for (const id of ids) {
+        box.innerHTML = `<div class="dk-loading">Deleting ${++n} of ${ids.length}…</div>`;
+        await rpc("delete", { run_id: id }).catch(() => {});
+        chosen.delete(id);
+        if (current === id) current = "";
+      }
+      selecting = false;
+      await loadRuns(); show();
+    }
+    $("histSelect").onclick = () => { selecting = true; chosen.clear(); loadRunsRender(); };
+    $("histDone").onclick = () => { selecting = false; chosen.clear(); loadRunsRender(); };
+    $("histAll").onchange = () => { if ($("histAll").checked) runs.forEach((r) => chosen.add(r.id)); else chosen.clear(); loadRunsRender(); };
+    $("histDel").onclick = () => deleteRuns([...chosen], `Delete ${chosen.size} selected?`);
+    $("histClear").onclick = () => deleteRuns(runs.map((r) => r.id), "Clear all history?");
 
     call("plugin.subscribe", { types: ["rea_status", "rea_runs_changed", "rea_run_progress", "rea_recreations_changed"] }).catch(() => {});
     window.addEventListener("message", (ev) => {

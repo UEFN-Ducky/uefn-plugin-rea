@@ -1,7 +1,7 @@
 {
   "id": "rea",
   "kind": "plugin",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "label": "Reverse Engineer",
   "description": "Point at any app, folder, EXE, DLL, archive or game file and see how it's built in one click, powered by REA (Reverse Engineer Anything). Agents get all 229 REA tools too.",
   "min_app_version": "1.0.0",
