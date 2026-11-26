@@ -989,7 +989,7 @@ def register(api) -> None:
                 _rec_row(rec)
         if runtime.ready():
             threading.Thread(target=_register_once, name="rea-mcp-register", daemon=True).start()
-        elif sys.platform == "win32" and api.is_enabled():
+        elif sys.platform in ("win32", "darwin") and api.is_enabled():
             # Turned on and not installed yet: set REA up now, nothing to press.
             setup()
     api.log("Reverse Engineer ready" if runtime.ready() else "Reverse Engineer: setting up REA")

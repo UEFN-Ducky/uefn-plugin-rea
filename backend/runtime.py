@@ -13,7 +13,9 @@ import os
 import re
 import shutil
 import subprocess
+import platform
 import sys
+import tarfile
 import threading
 import time
 import urllib.request
@@ -24,6 +26,9 @@ from typing import Callable
 NODE_VERSION = "24.22.1"
 NODE_URL = f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-win-x64.zip"
 NODE_SHA256 = "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
+# macOS: nodejs.org's tarball per chip (sha256 from its SHASUMS256.txt)
+NODE_MAC_SHA256 = {"arm64": "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7",
+                   "x64": "d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035"}
 REA_VERSION = "6.8.0"
 # Native decompiling (pseudocode, xrefs): REA's Ghidra provider wants Ghidra 12.1+ and a full
 # 64-bit JDK 21+. REA's Windows lane is verified with exactly these two.
@@ -60,8 +65,26 @@ def node_dir() -> Path:
     return root() / f"node-{NODE_VERSION}"
 
 
+def node_build() -> tuple[str, str, str]:
+    """(url, sha256, folder inside the archive) of the pinned Node for this OS and chip."""
+    if sys.platform == "darwin":
+        chip = "arm64" if platform.machine().lower() == "arm64" else "x64"
+        inner = f"node-v{NODE_VERSION}-darwin-{chip}"
+        return f"https://nodejs.org/dist/v{NODE_VERSION}/{inner}.tar.gz", NODE_MAC_SHA256[chip], inner
+    return NODE_URL, NODE_SHA256, f"node-v{NODE_VERSION}-win-x64"
+
+
+def node_bin_dir() -> Path:
+    return node_dir() if sys.platform == "win32" else node_dir() / "bin"
+
+
 def node_exe() -> Path:
-    return node_dir() / "node.exe"
+    return node_bin_dir() / ("node.exe" if sys.platform == "win32" else "node")
+
+
+def npm_cli() -> Path:
+    lib = node_dir() if sys.platform == "win32" else node_dir() / "lib"
+    return lib / "node_modules" / "npm" / "bin" / "npm-cli.js"
 
 
 def app_dir() -> Path:
@@ -108,7 +131,7 @@ def installed_version() -> str:
 
 def _env() -> dict:
     env = dict(os.environ)
-    env["PATH"] = str(node_dir()) + os.pathsep + env.get("PATH", "")
+    env["PATH"] = str(node_bin_dir()) + os.pathsep + env.get("PATH", "")
     env["npm_config_cache"] = str(root() / "npm-cache")
     env["npm_config_update_notifier"] = "false"
     env["NO_COLOR"] = "1"
@@ -249,18 +272,22 @@ def _install_zip(url: str, sha256: str, inner: str, dest: Path, label: str,
     Cancel at any point leaves nothing behind: the zip and the half-unpacked folder go."""
     base = root()
     base.mkdir(parents=True, exist_ok=True)
-    zip_path = base / f"{dest.name}.zip"
+    zip_path = base / (f"{dest.name}.tar.gz" if url.endswith(".tar.gz") else f"{dest.name}.zip")
     tmp = base / f"{dest.name}.part"
     try:
         _download(url, zip_path, sha256, progress, cancel, lo, lo + (hi - lo) * 0.9, label)
         progress(f"Unpacking {label}…", int(lo + (hi - lo) * 0.92))
         shutil.rmtree(tmp, ignore_errors=True)
-        with zipfile.ZipFile(zip_path) as zf:
-            safe = tmp.resolve()
-            for m in zf.infolist():
-                if os.path.commonpath([str(safe), str((tmp / m.filename).resolve())]) != str(safe):
-                    raise RuntimeError(f"unsafe path in the {label} archive: {m.filename}")
-            zf.extractall(tmp)
+        if zip_path.name.endswith(".tar.gz"):
+            with tarfile.open(zip_path) as tf:
+                tf.extractall(tmp, filter="data")  # refuses absolute and ../ paths, keeps exec bits
+        else:
+            with zipfile.ZipFile(zip_path) as zf:
+                safe = tmp.resolve()
+                for m in zf.infolist():
+                    if os.path.commonpath([str(safe), str((tmp / m.filename).resolve())]) != str(safe):
+                        raise RuntimeError(f"unsafe path in the {label} archive: {m.filename}")
+                zf.extractall(tmp)
         if cancel.is_set():
             raise Cancelled()
         shutil.rmtree(dest, ignore_errors=True)
@@ -272,8 +299,8 @@ def _install_zip(url: str, sha256: str, inner: str, dest: Path, label: str,
 
 def ensure_node(progress: Progress, cancel: threading.Event) -> None:
     if not node_exe().is_file():
-        _install_zip(NODE_URL, NODE_SHA256, f"node-v{NODE_VERSION}-win-x64", node_dir(),
-                     f"Node {NODE_VERSION}", progress, cancel, 2, 60)
+        url, sha, inner = node_build()
+        _install_zip(url, sha, inner, node_dir(), f"Node {NODE_VERSION}", progress, cancel, 2, 60)
 
 
 def ensure_ghidra(progress: Progress, cancel: threading.Event) -> None:
@@ -293,10 +320,9 @@ def install_rea(progress: Progress, cancel: threading.Event, version: str = REA_
     pkg = app / "package.json"
     if not pkg.is_file():
         pkg.write_text('{"name": "ducky-rea-host", "private": true}\n', "utf-8")
-    npm_cli = node_dir() / "node_modules" / "npm" / "bin" / "npm-cli.js"
     progress(f"Installing REA {version} (a minute or two)…", 62)
     proc = subprocess.Popen(
-        [str(node_exe()), str(npm_cli), "install", "--no-audit", "--no-fund", "--save-exact", f"rea-agents@{version}"],
+        [str(node_exe()), str(npm_cli()), "install", "--no-audit", "--no-fund", "--save-exact", f"rea-agents@{version}"],
         cwd=str(app), env=_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         encoding="utf-8", errors="replace", creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL,
     )
@@ -317,8 +343,8 @@ def install_rea(progress: Progress, cancel: threading.Event, version: str = REA_
 
 
 def setup(progress: Progress, cancel: threading.Event, update: bool = False) -> None:
-    if sys.platform != "win32":
-        raise RuntimeError("Reverse Engineer sets up its runtime on Windows only.")
+    if sys.platform not in ("win32", "darwin"):
+        raise RuntimeError("Reverse Engineer sets up its runtime on Windows and macOS only.")
     ensure_node(progress, cancel)
     if update or not rea_js().is_file():
         install_rea(progress, cancel, "latest" if update else REA_VERSION)

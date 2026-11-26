@@ -143,6 +143,36 @@ def test_orphan_cancel_matches_only_its_own_process() -> None:
     assert not _matches("", needles)
 
 
+def test_mac_node_is_the_pinned_tarball_and_unpacks(tmp_path, monkeypatch) -> None:
+    import io
+    import shutil
+    import sys
+    import tarfile
+
+    sys.path.insert(0, str(ROOT))
+    from backend import runtime
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(runtime.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(runtime, "root", lambda: tmp_path)
+    url, sha, inner = runtime.node_build()
+    assert url.endswith(f"/v{runtime.NODE_VERSION}/node-v{runtime.NODE_VERSION}-darwin-arm64.tar.gz")
+    assert sha == runtime.NODE_MAC_SHA256["arm64"] and inner.endswith("darwin-arm64")
+    monkeypatch.setattr(runtime.platform, "machine", lambda: "x86_64")
+    assert runtime.node_build()[2].endswith("darwin-x64")
+    assert runtime.node_exe() == runtime.node_dir() / "bin" / "node"
+    assert runtime.npm_cli() == runtime.node_dir() / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+
+    fake = tmp_path / "fake.tar.gz"
+    with tarfile.open(fake, "w:gz") as tf:
+        info = tarfile.TarInfo(f"{runtime.node_build()[2]}/bin/node")
+        info.size, info.mode = 4, 0o755
+        tf.addfile(info, io.BytesIO(b"node"))
+    monkeypatch.setattr(runtime, "_download", lambda _u, dest, *_a, **_k: shutil.copy(fake, dest))
+    runtime.ensure_node(lambda *_: None, __import__("threading").Event())
+    assert runtime.node_exe().read_bytes() == b"node"
+
+
 if __name__ == "__main__":
     test_manifest_shape()
     test_backend_sources_parse()
